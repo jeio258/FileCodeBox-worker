@@ -1,0 +1,20 @@
+{
+  "name": "filecodebox",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-08-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ADMIN_PASSWORD": "admin123",
+    "MAX_FILE_SIZE": "104857600",
+    "DEFAULT_EXPIRE_DAYS": "7"
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "openlist-db",
+    "database_id": "ba877e6a-b179-46f9-9234-79066c08d190"
+  }],
+  "kv_namespaces": [{
+    "binding": "FILE_STORE",
+    "id": "c1b91b7c590f41138f985965ddc9b3dc"
+  }]
+}
