@@ -19,6 +19,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Inject D1 & KV IDs
+        run: |
+          sed -i "s/D1_ID_PLACEHOLDER/$D1_ID/g" wrangler.jsonc
+          sed -i "s/KV_ID_PLACEHOLDER/$KV_ID/g" wrangler.jsonc
+        env:
+          D1_ID: ${{ secrets.D1_ID }}
+          KV_ID: ${{ secrets.KV_ID }}
+
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
