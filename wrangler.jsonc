@@ -10,11 +10,11 @@
   },
   "d1_databases": [{
     "binding": "DB",
-    "database_name": "openlist-db",
-    "database_id": "ba877e6a-b179-46f9-9234-79066c08d190"
+    "database_name": "filecodebox-db",
+    "database_id": "YOUR_D1_ID"
   }],
   "kv_namespaces": [{
     "binding": "FILE_STORE",
-    "id": "c1b91b7c590f41138f985965ddc9b3dc"
+    "id": "YOUR_KV_ID"
   }]
 }
