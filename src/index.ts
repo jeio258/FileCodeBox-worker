@@ -1,131 +1,375 @@
 /**
- * FileCodeBox — Cloudflare Worker
+ * FileCodeBox - Cloudflare Worker 重写版
  * 像取快递一样取文件
  */
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
+import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 
-import type { Env, FileRecord, FileMeta } from './types';
-import { generateCode, hashPassword, formatFileSize, KV_MAX_SIZE } from './utils';
-import { initDB, getFileByCode, getFileById, isCodeTaken, insertFile, incrementDownload, deleteFileRecord, listFiles, cleanupExpired, getSetting, setSetting } from './db';
-import { adminAuth, handleAdminLogin, handleAdminLogout, checkLoginRateLimit } from './auth';
-import { homePage, retrievePage, resultPage, filePage, adminLoginPage, adminPanel } from './templates/pages';
-import { layout } from './templates/layout';
+type Env = {
+  DB: D1Database;
+  FILE_STORE: KVNamespace;
+  ADMIN_PASSWORD: string;
+  MAX_FILE_SIZE: string;
+  DEFAULT_EXPIRE_DAYS: string;
+};
 
 const app = new Hono<{ Bindings: Env }>();
-
-// ---- 全局中间件 ----
 app.use('*', cors());
 app.use('*', async (c, next) => {
   await next();
   c.res.headers.set('Referrer-Policy', 'no-referrer');
 });
 
-// 懒初始化数据库（每个请求都确保，因 DDL 使用 IF NOT EXISTS 所以开销极小）
-app.use('*', async (c, next) => {
-  await initDB(c.env.DB);
-  await next();
-});
+// 支持 /filecodebox 前缀路由
+const filebox = new Hono<{ Bindings: Env }>();
+app.route('/filecodebox', filebox);
 
-// ---- 首页 ----
+// ===================== 工具函数 =====================
+
+function generateCode(): string {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+function now(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function ttl(dateStr: string): number {
+  return Math.floor(new Date(dateStr).getTime() / 1000);
+}
+
+async function hashPassword(pwd: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(pwd);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ===================== 数据库初始化 =====================
+
+async function initDB(db: D1Database) {
+  const stmts = [
+    'CREATE TABLE IF NOT EXISTS fc_files (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, filename TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mime_type TEXT DEFAULT "application/octet-stream", expire_at TEXT NOT NULL, download_count INTEGER DEFAULT 0, max_downloads INTEGER DEFAULT -1, created_at TEXT NOT NULL, ip TEXT DEFAULT "")',
+    'CREATE INDEX IF NOT EXISTS idx_fc_code ON fc_files(code)',
+    'CREATE INDEX IF NOT EXISTS idx_fc_expire ON fc_files(expire_at)',
+    'CREATE TABLE IF NOT EXISTS fc_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    'INSERT OR IGNORE INTO fc_settings(key, value) VALUES("admin_password", "admin123")',
+  ];
+  for (const s of stmts) {
+    await db.prepare(s).run();
+  }
+  return true;
+}
+
+// ===================== HTML 模板 =====================
+
+const PAGE_STYLE = `
+:root{--bg:#f5f3ef;--card:#fafaf8;--text:#3d3a35;--text2:#8c8880;--accent:#7d8c7d;--accent-hv:#6b7a6b;--warm:#c4a882;--warm-hv:#b0956e;--danger:#c0392b;--danger-bg:#fdf0ef;--border:#e8e4df;--border-focus:#b8b0a4;--radius:8px;--radius-sm:6px}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{overflow-x:clip}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;line-height:1.6;-webkit-font-smoothing:antialiased}
+.container{max-width:480px;margin:0 auto;padding:32px 16px 48px}
+.card{background:var(--card);border-radius:var(--radius);padding:28px 24px;border:1px solid var(--border)}
+.logo{text-align:center;margin-bottom:24px}
+.logo h1{font-size:24px;font-weight:600;color:var(--accent);letter-spacing:-0.3px}
+.logo p{font-size:13px;color:var(--text2);margin-top:4px}
+.section-pickup{background:linear-gradient(135deg,rgba(196,168,130,.12),rgba(196,168,130,.04));border:1px solid rgba(196,168,130,.2);border-radius:var(--radius);padding:20px;margin-bottom:20px}
+.section-pickup .section-label{font-size:13px;font-weight:600;color:var(--warm-hv);margin-bottom:10px;letter-spacing:0.3px}
+.section-upload .section-label{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 18px;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:500;cursor:pointer;transition:background .15s,opacity .15s;text-decoration:none;line-height:1;font-family:inherit}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn-primary{background:var(--accent);color:#fff;width:100%}
+.btn-primary:hover{background:var(--accent-hv)}
+.btn-primary:active{background:var(--accent-hv)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-warm{background:var(--warm);color:#fff;width:100%}
+.btn-warm:hover{background:var(--warm-hv)}
+.btn-warm:active{background:var(--warm-hv)}
+.btn-secondary{background:var(--bg);color:var(--text);border:1px solid var(--border);width:100%}
+.btn-secondary:hover{background:var(--border)}
+.btn-sm{padding:6px 14px;font-size:13px;width:auto}
+.btn-danger{color:var(--danger);font-size:13px;text-decoration:none;padding:4px 8px;border-radius:var(--radius-sm)}
+.btn-danger:hover{background:var(--danger-bg)}
+.input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;outline:none;transition:border-color .15s;background:#fff;color:var(--text)}
+.input:focus{border-color:var(--border-focus);box-shadow:0 0 0 3px rgba(125,140,125,.12)}
+.input-group{margin-bottom:14px}
+.input-group label{display:block;font-size:13px;font-weight:500;color:var(--text2);margin-bottom:5px}
+.code-box{text-align:center;padding:16px 0}
+.code-display{font-size:48px;font-weight:600;letter-spacing:10px;color:var(--text);font-family:'SF Mono','JetBrains Mono','Courier New',monospace;background:var(--bg);display:inline-block;padding:6px 20px;border-radius:var(--radius-sm);margin:12px 0}
+.copy-text-btn{cursor:pointer;color:var(--accent);font-size:13px;font-weight:500;background:none;border:none;padding:4px 10px;border-radius:var(--radius-sm);transition:background .15s,color .15s;font-family:inherit}
+.copy-text-btn:hover{background:rgba(125,140,125,.08)}
+.copy-text-btn.copied{color:var(--warm-hv)}
+.info-row{display:flex;justify-content:center;gap:16px;font-size:13px;color:var(--text2);margin:12px 0;flex-wrap:wrap}
+.info-tag{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--bg);border-radius:20px;font-size:12px;border:1px solid var(--border)}
+.file-icon-box{width:56px;height:56px;background:var(--accent);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px}
+.nav{display:flex;justify-content:flex-end;gap:4px;margin-bottom:20px}
+.nav a{font-size:13px;color:var(--text2);text-decoration:none;padding:6px 12px;border-radius:var(--radius-sm);transition:background .15s}
+.nav a:hover{background:var(--border);color:var(--text)}
+.nav a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.file-list-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg);border-radius:var(--radius-sm);margin-bottom:6px;transition:background .15s;gap:8px}
+.file-list-item:hover{background:var(--border)}
+.file-list-item .fname{font-size:13px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-list-item .fmeta{font-size:12px;color:var(--text2);white-space:nowrap}
+.expired{opacity:.4}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500}
+.badge-danger{background:var(--danger-bg);color:var(--danger)}
+.badge-success{background:#edf2ed;color:var(--accent)}
+.stats-row{display:flex;gap:8px;margin-bottom:16px}
+.stats-row .btn{flex:1}
+.footer{text-align:center;margin-top:24px;font-size:12px;color:var(--text2)}
+.footer a{color:var(--text2)}
+@media(max-width:420px){.container{padding:20px 12px 40px}.card{padding:20px 16px}.code-display{font-size:36px;letter-spacing:8px}.section-pickup{padding:16px}}
+`;
+
+function layout(title: string, content: string, nav: string = '', showFooter: boolean = true): string {
+  const footer = showFooter ? '<div class="footer"><a href="/">FileCodeBox</a> · 安全临时文件分享</div>' : '';
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${PAGE_STYLE}</style></head><body><div class="container">${nav}<div class="card">${content}</div>${footer}</div></body></html>`;
+}
+
+// ===================== 页面 =====================
+
+function homePage(): string {
+  const nav = `<div class="nav"><a href="/admin">管理</a></div>`;
+  const content = `
+    <div class="logo"><h1>FileCodeBox</h1><p>像取快递一样取文件</p></div>
+    
+    <!-- 取件区 - 主操作 -->
+    <div class="section-pickup">
+      <div class="section-label">取件</div>
+      <form action="/r" method="get">
+        <div style="display:flex;gap:8px">
+          <input type="text" name="code" class="input" placeholder="输入 4 位取件码" maxlength="4" required style="text-align:center;font-size:20px;letter-spacing:6px;text-transform:uppercase;flex:1" autocomplete="off">
+          <button type="submit" class="btn btn-warm" style="width:auto;padding:10px 20px">取件</button>
+        </div>
+      </form>
+      <div style="font-size:12px;color:var(--text2);margin-top:8px">输入分享者给你的 4 位取件码</div>
+    </div>
+
+    <!-- 上传区 -->
+    <div class="section-upload">
+      <div class="section-label">上传新文件</div>
+      <form action="/api/upload" method="post" enctype="multipart/form-data" onsubmit="var b=document.getElementById('submitBtn');b.disabled=true;b.textContent='上传中…'">
+        <div class="input-group"><label>选择文件</label><input type="file" name="file" required class="input"></div>
+        <div style="display:flex;gap:12px">
+          <div class="input-group" style="flex:1"><label>最大下载次数</label><input type="number" name="max_downloads" value="-1" min="-1" class="input" placeholder="不限"></div>
+          <div class="input-group" style="flex:1"><label>过期天数</label><input type="number" name="expire_days" min="1" max="365" value="7" class="input" placeholder="7"></div>
+        </div>
+        <div class="input-group"><label>自定义取件码 <span style="font-weight:400;color:var(--text2)">（可选，留空自动生成）</span></label><input type="text" name="code" class="input" placeholder="4 位取件码" maxlength="4" pattern="[A-Z0-9]{0,4}"></div>
+        <button type="submit" id="submitBtn" class="btn btn-primary">上传并获取取件码</button>
+      </form>
+    </div>`;
+  return layout('FileCodeBox - 文件快递柜', content, nav);
+}
+
+function retrievePage(code?: string): string {
+  const nav = `<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>`;
+  const content = `
+    <div class="logo"><h1>取件</h1><p>输入取件码下载文件</p></div>
+    <form action="/r" method="get">
+      <div class="input-group"><label>取件码</label><input type="text" name="code" value="${code || ''}" class="input" placeholder="输入 4 位取件码" maxlength="4" required style="text-align:center;font-size:24px;letter-spacing:8px;text-transform:uppercase" autofocus></div>
+      <button type="submit" class="btn btn-primary">取件</button>
+    </form>`;
+  return layout('取件 - FileCodeBox', content, nav);
+}
+
+function resultPage(code: string, filename: string, size: number): string {
+  const sizeStr = size > 1048576 ? `${(size/1048576).toFixed(1)} MB` : size > 1024 ? `${(size/1024).toFixed(1)} KB` : `${size} B`;
+  const nav = `<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>`;
+  const shareUrl = `https://ooo.994613.xyz/r/${code}`;
+  const content = `
+    <div class="logo"><h1>上传成功</h1></div>
+    <div class="code-box">
+      <div style="font-size:13px;color:var(--text2);margin-bottom:8px">取件码</div>
+      <div class="code-display">${code}</div>
+      <button class="copy-text-btn" id="copyCodeBtn" onclick="var b=document.getElementById('copyCodeBtn');navigator.clipboard.writeText('${code}').then(()=>{b.textContent='已复制';b.classList.add('copied');setTimeout(()=>{b.textContent='复制取件码';b.classList.remove('copied')},2000)})">复制取件码</button>
+      <div class="info-row" style="margin-top:16px">
+        <span class="info-tag">${filename}</span>
+        <span class="info-tag">${sizeStr}</span>
+      </div>
+      <div style="margin-top:20px">
+        <button class="copy-text-btn" id="copyLinkBtn" onclick="var b=document.getElementById('copyLinkBtn');navigator.clipboard.writeText('${shareUrl}').then(()=>{b.textContent='链接已复制';b.classList.add('copied');setTimeout(()=>{b.textContent='复制分享链接';b.classList.remove('copied')},2000)})">复制分享链接</button>
+      </div>
+    </div>
+    <a href="/" class="btn btn-secondary" style="text-decoration:none;margin-top:12px">继续上传</a>`;
+  return layout('上传成功 - FileCodeBox', content, nav);
+}
+
+function filePage(file: any): string {
+  const nav = `<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>`;
+  const sizeStr = file.size > 1048576 ? `${(file.size/1048576).toFixed(1)} MB` : file.size > 1024 ? `${(file.size/1024).toFixed(1)} KB` : `${file.size} B`;
+  const dlInfo = file.max_downloads < 0 ? '不限次数' : `已下载 ${file.download_count}/${file.max_downloads} 次`;
+  const expireDate = new Date(file.expire_at);
+  const expireStr = expireDate > new Date(Date.now() + 365 * 86400000) ? '永久有效' : `过期时间: ${expireDate.toLocaleDateString('zh-CN')}`;
+  const expired = new Date(file.expire_at).getTime() < Date.now();
+  const shareUrl = `https://ooo.994613.xyz/r/${file.code}`;
+
+  const content = `
+    <div class="logo"><h1>取件</h1></div>
+    ${expired ? '<div style="text-align:center;color:var(--danger);font-size:14px;margin-bottom:16px">此文件已过期</div>' : ''}
+    <div style="text-align:center;padding:20px 0">
+      <div style="width:56px;height:56px;background:var(--accent);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      </div>
+      <div style="font-size:20px;font-weight:600;margin-bottom:8px;word-break:break-all">${file.filename}</div>
+      <div style="display:flex;justify-content:center;gap:24px;font-size:13px;color:var(--text2);margin-bottom:8px">
+        <span>${sizeStr}</span>
+        <span>${dlInfo}</span>
+      </div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:24px">${expireStr}</div>
+      ${!expired ? `
+        <a href="/api/download/${file.code}" class="btn btn-primary" style="text-decoration:none;width:auto;padding:14px 48px;display:inline-flex">下载文件</a>
+        <div style="margin-top:12px;font-size:13px;color:var(--text2)">
+          取件码: <strong style="font-size:18px;color:var(--accent);letter-spacing:3px">${file.code}</strong>
+        </div>
+        <div style="margin-top:8px">
+          <button id="copyShareBtn" onclick="var b=document.getElementById('copyShareBtn');navigator.clipboard.writeText('${shareUrl}').then(()=>{b.textContent='链接已复制';b.classList.add('copied');setTimeout(()=>{b.textContent='复制分享链接';b.classList.remove('copied')},2000)})" class="btn btn-secondary" style="width:auto;display:inline-flex;padding:8px 16px;font-size:13px">复制分享链接</button>
+        </div>
+      ` : ''}
+    </div>`;
+  return layout('取件 - FileCodeBox', content, nav);
+}
+
+function adminLoginPage(error?: string): string {
+  const content = `
+    <div class="logo"><h1>管理员登录</h1><p>FileCodeBox 后台管理</p></div>
+    ${error ? `<div style="color:var(--danger);text-align:center;margin-bottom:16px;font-size:14px">${error}</div>` : ''}
+    <form action="/api/admin/login" method="post">
+      <div class="input-group"><label>密码</label><input type="password" name="password" class="input" placeholder="输入管理员密码" required autofocus></div>
+      <button type="submit" class="btn btn-primary">登录</button>
+    </form>
+    <div style="text-align:center;margin-top:16px"><a href="/" style="font-size:14px;color:var(--text2)">← 返回首页</a></div>`;
+  return layout('管理员登录 - FileCodeBox', content);
+}
+
+function adminPage(files: any[], total: number, page: number, error?: string): string {
+  const nav = `<div class="nav"><a href="/">首页</a><a href="/api/admin/logout">退出</a></div>`;
+  const totalPages = Math.ceil(total / 50);
+  const pagination = totalPages > 1 ? `<div style="text-align:center;margin-top:16px;font-size:14px;color:var(--text2)">第 ${page}/${totalPages} 页 | 共 ${total} 个文件</div>` : '';
+
+  const fileRows = files.map((f: any) => {
+    const expired = new Date(f.expire_at).getTime() < Date.now();
+    const size = f.size > 1048576 ? `${(f.size/1048576).toFixed(1)}MB` : `${(f.size/1024).toFixed(1)}KB`;
+    return `<div class="file-list-item ${expired ? 'expired' : ''}">
+      <span class="fname">${f.filename}</span>
+      <span class="fmeta">${f.code}</span>
+      <span class="fmeta">${size}</span>
+      <span class="fmeta">${f.download_count}次</span>
+      <span class="fmeta">${f.expire_at.slice(0,10)}</span>
+      <a href="/api/admin/delete/${f.id}" class="btn-danger" onclick="return confirm('确认删除?')">删除</a>
+    </div>`;
+  }).join('');
+
+  const content = `
+    <div class="logo"><h1>管理面板</h1><p>共 ${total} 个文件</p></div>
+    ${error ? `<div style="color:var(--danger);text-align:center;margin-bottom:16px">${error}</div>` : ''}
+    <div style="margin-bottom:16px">
+      <a href="/api/admin/cleanup" class="btn btn-secondary" style="text-decoration:none" onclick="return confirm('确认清理所有过期文件?')">清理过期文件</a>
+    </div>
+    <div>${fileRows}</div>
+    ${pagination}
+    <div style="text-align:center;margin-top:16px">
+      ${page > 1 ? `<a href="/admin?page=${page-1}" style="font-size:14px;margin-right:12px;color:var(--accent)">← 上一页</a>` : ''}
+      ${page < totalPages ? `<a href="/admin?page=${page+1}" style="font-size:14px;color:var(--accent)">下一页 →</a>` : ''}
+    </div>`;
+  return layout('管理面板 - FileCodeBox', content, nav);
+}
+
+// ===================== 中间件 =====================
+
+async function adminAuth(c: any, env: Env): Promise<boolean> {
+  const token = getCookie(c, 'admin_token') || c.req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) return false;
+  try {
+    const result = await env.DB.prepare('SELECT value FROM fc_settings WHERE key = ?').bind('admin_token').first<any>();
+    return result?.value === token;
+  } catch { return false; }
+}
+
+// ===================== 路由 =====================
+
+// 首页
 app.get('/', (c) => c.html(homePage()));
 
-// ---- 取件入口 ----
+// 取件页
 app.get('/r', (c) => {
-  const code = (c.req.query('code') ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const code = (c.req.query('code') || '').toUpperCase().trim();
   if (code) return c.redirect(`/r/${code}`);
   return c.html(retrievePage());
 });
 
-// ---- API: 上传 ----
+// ===== API: 上传 =====
 app.post('/api/upload', async (c) => {
   const env = c.env;
   try {
-    const body = await c.req.parseBody();
-    const file = body['file'] as File | undefined;
+  const body = await c.req.parseBody();
+  const file = body['file'] as File | undefined;
 
-    if (!file) {
-      return c.html(homePage());
-    }
+  if (!file) {
+    return c.html(homePage());
+  }
 
-    // 双重文件大小校验：环境变量上限 + KV 单值上限
-    const envMax = parseInt(env.MAX_FILE_SIZE || '104857600', 10);
-    const effectiveMax = Math.min(envMax, KV_MAX_SIZE);
-    if (file.size > effectiveMax) {
-      const maxMB = Math.floor(effectiveMax / 1048576);
-      return c.html(layout('错误', `<div class="header"><h1>文件过大</h1></div><p style="text-align:center;color:var(--text2)">最大支持 ${maxMB} MB</p><a href="/" class="btn btn-secondary" style="margin-top:16px">返回</a>`));
-    }
+  const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
+  if (file.size > maxSize) {
+    return c.html(layout('错误', `<div class="logo"><h1>文件过大</h1></div><p style="text-align:center">最大支持 ${Math.floor(maxSize/1048576)}MB</p><a href="/" class="btn btn-secondary" style="text-decoration:none;margin-top:16px">返回</a>`));
+  }
 
-    // 取件码：用户自定义或自动生成
-    let code = (body['code'] as string || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (!code || code.length !== 4) {
-      code = generateCode();
-    }
+  const code = (body['code'] as string || generateCode()).toUpperCase().trim() || generateCode();
+  const maxDownloads = parseInt(body['max_downloads'] as string || '-1');
+  const expireDays = parseInt(body['expire_days'] as string || env.DEFAULT_EXPIRE_DAYS || '7');
 
-    // 检查取件码是否已被占用
-    if (await isCodeTaken(env.DB, code)) {
-      return c.html(layout('错误', `<div class="header"><h1>取件码已被占用</h1></div><a href="/" class="btn btn-secondary" style="margin-top:16px">返回</a>`));
-    }
+  // Check code uniqueness
+  const existing = await env.DB.prepare('SELECT id FROM fc_files WHERE code = ? AND expire_at > datetime("now")').bind(code).first();
+  if (existing) {
+    return c.html(layout('错误', `<div class="logo"><h1>取件码已被占用</h1></div><a href="/" class="btn btn-secondary" style="text-decoration:none;margin-top:16px">返回</a>`));
+  }
 
-    const maxDownloads = parseInt(body['max_downloads'] as string || '-1', 10);
-    const expireDays = parseInt(body['expire_days'] as string || env.DEFAULT_EXPIRE_DAYS || '7', 10);
-    const expireAt = new Date(Date.now() + expireDays * 86400000).toISOString();
+  const expireAt = new Date(Date.now() + expireDays * 86400000).toISOString();
 
-    // 先写 KV
-    const buffer = await file.arrayBuffer();
-    const kvKey = `file:${code}`;
-    await env.FILE_STORE.put(kvKey, buffer, {
-      metadata: { filename: file.name, mimeType: file.type, size: file.size } satisfies FileMeta,
-    });
+  // Store file in KV (max 25MB per value)
+  const buffer = await file.arrayBuffer();
+  const key = `file:${code}`;
+  await env.FILE_STORE.put(key, buffer, { metadata: { filename: file.name, mimeType: file.type, size: file.size } });
 
-    // 再写 D1（若失败，尽力清理 KV）
-    try {
-      await insertFile(env.DB, {
-        code,
-        filename: file.name || '未命名',
-        size: file.size,
-        mimeType: file.type || 'application/octet-stream',
-        expireAt,
-        maxDownloads,
-      });
-    } catch (dbErr) {
-      await env.FILE_STORE.delete(kvKey);
-      throw dbErr;
-    }
+  // Store metadata in D1
+  await env.DB.prepare(
+    'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).bind(code, file.name || '未命名', file.size, file.type || 'application/octet-stream', expireAt, maxDownloads, new Date().toISOString()).run();
 
-    const baseUrl = new URL(c.req.url).origin;
-    return c.html(resultPage(code, file.name || '未命名', file.size, baseUrl));
+  return c.html(resultPage(code, file.name || '未命名', file.size));
   } catch (e: any) {
-    return c.html(layout('错误', `<div class="header"><h1>上传失败</h1></div><p style="text-align:center;color:var(--text2)">${e.message}</p><a href="/" class="btn btn-secondary" style="margin-top:16px">返回</a>`));
+    return c.html(layout('错误', `<div class="logo"><h1>上传失败</h1></div><p style="text-align:center">${e.message}</p><a href="/" class="btn btn-secondary" style="text-decoration:none;margin-top:16px">返回</a>`));
   }
 });
 
-// ---- API: 下载 ----
+// ===== API: 下载 =====
 app.get('/api/download/:code', async (c) => {
   const env = c.env;
   const code = c.req.param('code').toUpperCase();
 
-  const file = await getFileByCode(env.DB, code);
+  const file = await env.DB.prepare(
+    'SELECT * FROM fc_files WHERE code = ? AND expire_at > datetime("now")'
+  ).bind(code).first<any>();
+
   if (!file) {
     return c.html(retrievePage(code));
   }
 
-  // 检查下载次数限制（非原子先行检查，减少无谓更新）
   if (file.max_downloads >= 0 && file.download_count >= file.max_downloads) {
-    return c.html(layout('错误', '<div class="header"><h1>已达最大下载次数</h1></div><a href="/" class="btn btn-secondary" style="margin-top:16px">返回</a>'));
+    return c.html(layout('错误', '<div class="logo"><h1>已达最大下载次数</h1></div><a href="/" class="btn btn-secondary" style="text-decoration:none;margin-top:16px">返回</a>'));
   }
 
-  // 原子递增下载计数
-  const incremented = await incrementDownload(env.DB, code);
-  if (!incremented) {
-    // 并发情况下已被其他请求占满
-    return c.html(layout('错误', '<div class="header"><h1>已达最大下载次数</h1></div><a href="/" class="btn btn-secondary" style="margin-top:16px">返回</a>'));
-  }
+  await env.DB.prepare('UPDATE fc_files SET download_count = download_count + 1 WHERE code = ?').bind(code).run();
 
   const fileData = await env.FILE_STORE.get(`file:${code}`, 'arrayBuffer');
   if (!fileData) {
-    return c.html(layout('错误', '<div class="header"><h1>文件不存在</h1></div><a href="/" class="btn btn-secondary" style="margin-top:16px">返回</a>'));
+    return c.html(layout('错误', '<div class="logo"><h1>文件不存在</h1></div><a href="/" class="btn btn-secondary" style="text-decoration:none;margin-top:16px">返回</a>'));
   }
 
   return new Response(fileData, {
@@ -133,14 +377,14 @@ app.get('/api/download/:code', async (c) => {
       'Content-Type': file.mime_type || 'application/octet-stream',
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
       'Content-Length': String(file.size),
-    },
+    }
   });
 });
 
-// ---- API: 文件信息 ----
+// 查看文件信息
 app.get('/api/info/:code', async (c) => {
   const code = c.req.param('code').toUpperCase();
-  const file = await getFileByCode(c.env.DB, code);
+  const file = await c.env.DB.prepare('SELECT * FROM fc_files WHERE code = ?').bind(code).first<any>();
   if (!file) return c.json({ error: 'not found' }, 404);
   return c.json({
     filename: file.filename,
@@ -151,86 +395,99 @@ app.get('/api/info/:code', async (c) => {
   });
 });
 
-// ---- 取件详情页 ----
+// 取件（GET）
 app.get('/r/:code', async (c) => {
   const code = c.req.param('code').toUpperCase();
-  const file = await getFileByCode(c.env.DB, code);
+  const file = await c.env.DB.prepare('SELECT * FROM fc_files WHERE code = ? AND expire_at > datetime("now")').bind(code).first<any>();
   if (!file) return c.html(retrievePage(code));
 
-  const baseUrl = new URL(c.req.url).origin;
-  return c.html(filePage(file, baseUrl));
+  return c.html(filePage(file));
 });
 
-// ---- Admin 页面 ----
+// ===== Admin =====
 app.get('/admin', async (c) => {
   const env = c.env;
-  if (!(await adminAuth(c, env))) return c.html(adminLoginPage());
+  if (!await adminAuth(c, env)) return c.html(adminLoginPage());
 
-  const page = Math.max(1, parseInt(c.req.query('page') || '1', 10));
-  const { files, total } = await listFiles(env.DB, page);
-  return c.html(adminPanel(files, total, page));
+  const page = parseInt(c.req.query('page') || '1');
+  const offset = (page - 1) * 50;
+
+  const files = await env.DB.prepare('SELECT * FROM fc_files ORDER BY id DESC LIMIT 50 OFFSET ?').bind(offset).all<any>();
+  const total = await env.DB.prepare('SELECT COUNT(*) as count FROM fc_files').first<any>();
+
+  return c.html(adminPage(files.results || [], total?.count || 0, page));
 });
 
-// ---- Admin 登录 ----
 app.post('/api/admin/login', async (c) => {
   const env = c.env;
   const body = await c.req.parseBody();
-  const password = (body['password'] as string) || '';
+  const password = body['password'] as string;
 
-  // 速率限制
-  const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown';
-  if (!(await checkLoginRateLimit(env.FILE_STORE, ip))) {
-    return c.html(adminLoginPage('尝试次数过多，请 1 分钟后再试'));
+  const setting = await env.DB.prepare('SELECT value FROM fc_settings WHERE key = ?').bind('admin_password').first<any>();
+  const correctPwd = setting?.value || env.ADMIN_PASSWORD || 'admin123';
+
+  const hashedInput = await hashPassword(password);
+  const hashedStored = await hashPassword(correctPwd);
+
+  if (hashedInput !== hashedStored && password !== correctPwd) {
+    return c.html(adminLoginPage('密码错误'));
   }
 
-  const result = await handleAdminLogin(c, env, password);
-  if (!result.success) {
-    return c.html(adminLoginPage(result.error));
-  }
+  const token = crypto.randomUUID();
+  await env.DB.prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)').bind('admin_token', token).run();
 
+  setCookie(c, 'admin_token', token, { httpOnly: true, maxAge: 86400, path: '/' });
   return c.redirect('/admin');
 });
 
-// ---- Admin 登出（改为 POST） ----
-app.post('/api/admin/logout', async (c) => {
-  handleAdminLogout(c);
-  return c.redirect('/');
-});
-
-// 保留 GET 兼容（老链接），也调 POST 逻辑
 app.get('/api/admin/logout', async (c) => {
-  handleAdminLogout(c);
+  deleteCookie(c, 'admin_token');
   return c.redirect('/');
 });
 
-// ---- Admin 删除文件（改为 POST） ----
-app.post('/api/admin/delete/:id', async (c) => {
+app.get('/api/admin/delete/:id', async (c) => {
   const env = c.env;
-  if (!(await adminAuth(c, env))) return c.redirect('/admin');
+  if (!await adminAuth(c, env)) return c.redirect('/admin');
 
-  const id = parseInt(c.req.param('id'), 10);
-  if (isNaN(id)) return c.redirect('/admin');
-
-  const file = await deleteFileRecord(env.DB, id);
+  const id = c.req.param('id');
+  const file = await env.DB.prepare('SELECT * FROM fc_files WHERE id = ?').bind(parseInt(id)).first<any>();
   if (file) {
     await env.FILE_STORE.delete(`file:${file.code}`);
+    await env.DB.prepare('DELETE FROM fc_files WHERE id = ?').bind(parseInt(id)).run();
   }
   return c.redirect('/admin');
 });
 
-// ---- Admin 清理过期文件（改为 POST） ----
-app.post('/api/admin/cleanup', async (c) => {
+app.get('/api/admin/cleanup', async (c) => {
   const env = c.env;
-  if (!(await adminAuth(c, env))) return c.redirect('/admin');
+  if (!await adminAuth(c, env)) return c.redirect('/admin');
 
-  const count = await cleanupExpired(env.DB, env.FILE_STORE);
+  const expired = await env.DB.prepare("SELECT * FROM fc_files WHERE expire_at <= datetime('now')").all<any>();
+  for (const f of (expired.results || [])) {
+    await env.FILE_STORE.delete(`file:${f.code}`);
+  }
+  await env.DB.prepare("DELETE FROM fc_files WHERE expire_at <= datetime('now')").run();
   return c.redirect('/admin');
 });
 
-// ---- Cron: 自动清理过期文件 ----
+// Cron: 自动清理过期文件
 app.get('/api/cron/cleanup', async (c) => {
-  const count = await cleanupExpired(c.env.DB, c.env.FILE_STORE);
-  return c.json({ cleaned: count });
+  const expired = await c.env.DB.prepare("SELECT * FROM fc_files WHERE expire_at <= datetime('now')").all<any>();
+  for (const f of (expired.results || [])) {
+    await c.env.FILE_STORE.delete(`file:${f.code}`);
+  }
+  await c.env.DB.prepare("DELETE FROM fc_files WHERE expire_at <= datetime('now')").run();
+  return c.json({ cleaned: expired.results?.length || 0 });
+});
+
+// 初始化
+app.get('/api/init', async (c) => {
+  try {
+    await initDB(c.env.DB);
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
 });
 
 export default app;

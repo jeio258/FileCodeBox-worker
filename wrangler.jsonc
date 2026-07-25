@@ -11,10 +11,10 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "filecodebox-db",
-    "database_id": "D1_ID_PLACEHOLDER"
+    "database_id": "64ed02dd-5ce9-4c8b-9ef3-005542ac6389"
   }],
   "kv_namespaces": [{
     "binding": "FILE_STORE",
-    "id": "KV_ID_PLACEHOLDER"
+    "id": "c1b91b7c590f41138f985965ddc9b3dc"
   }]
 }
