@@ -6,7 +6,10 @@
   "vars": {
     "ADMIN_PASSWORD": "admin123",
     "MAX_FILE_SIZE": "104857600",
-    "DEFAULT_EXPIRE_DAYS": "7"
+    "DEFAULT_EXPIRE_DAYS": "7",
+    "UUID": "your-uuid-here",
+    "PROXYIP": "proxyip.edgetunnel.workers.dev",
+    "HOST": "your-proxy-host.example.com"
   },
   "d1_databases": [{
     "binding": "DB",

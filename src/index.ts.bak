@@ -6,7 +6,6 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-import edgetunnel from './edgetunnel.js';
 
 type Env = {
   DB: D1Database;
@@ -835,32 +834,4 @@ app.get('/api/init', async (c) => {
   }
 });
 
-// ===================== 合并导出: FileCodeBox + Edgetunnel =====================
-
-export default {
-  async fetch(request: Request, env: any, ctx: any) {
-    const url = new URL(request.url);
-    const path = url.pathname.toLowerCase();
-
-    // FileCodeBox 路由
-    if (
-      path === '/' || path === '' ||
-      path.startsWith('/r') ||
-      path.startsWith('/api/upload') ||
-      path.startsWith('/api/chunk') ||
-      path.startsWith('/api/text') ||
-      path.startsWith('/api/download') ||
-      path.startsWith('/api/info') ||
-      path.startsWith('/api/console') ||
-      path.startsWith('/api/cron') ||
-      path.startsWith('/api/init') ||
-      path === '/console' || path.startsWith('/console/') ||
-      path === '/filecodebox' || path.startsWith('/filecodebox/')
-    ) {
-      return app.fetch(request, env, ctx);
-    }
-
-    // 其余交给 edgetunnel (代理/隧道/订阅/管理)
-    return edgetunnel.fetch(request, env, ctx);
-  }
-};
+export default app;
