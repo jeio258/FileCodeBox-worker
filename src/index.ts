@@ -183,7 +183,7 @@ function homePage(): string {
 
       <!-- 文件上传面板 -->
       <div id="tab-file" class="tab-panel active">
-        <form id="uploadForm" onsubmit="handleUpload(event)">
+        <form id="uploadForm" action="/api/upload" method="post" enctype="multipart/form-data" onsubmit="handleUpload(event)">
           <div class="input-group"><label>选择文件</label><input type="file" name="file" id="fileInput" required class="input"></div>
           <div style="display:flex;gap:12px">
             <div class="input-group" style="flex:1"><label>最大下载次数</label><input type="number" name="max_downloads" value="-1" min="-1" class="input" placeholder="不限"></div>
