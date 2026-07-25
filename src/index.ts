@@ -63,8 +63,16 @@ async function initDB(db: D1Database) {
     'CREATE TABLE IF NOT EXISTS fc_chunks (upload_id TEXT NOT NULL, chunk_index INTEGER NOT NULL, total_chunks INTEGER NOT NULL, file_name TEXT NOT NULL, file_size INTEGER NOT NULL, chunk_size INTEGER NOT NULL, mime_type TEXT DEFAULT "application/octet-stream", created_at TEXT NOT NULL, PRIMARY KEY (upload_id, chunk_index))',
     'INSERT OR IGNORE INTO fc_settings(key, value) VALUES("admin_password", "admin123")',
   ];
+  // Migration: add columns that may be missing on existing tables
+  const migrations = [
+    'ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0',
+    'ALTER TABLE fc_files ADD COLUMN chunk_count INTEGER DEFAULT 0',
+  ];
   for (const s of stmts) {
-    await db.prepare(s).run();
+    try { await db.prepare(s).run(); } catch (e: any) { /* ignore */ }
+  }
+  for (const m of migrations) {
+    try { await db.prepare(m).run(); } catch (e: any) { /* column already exists — ok */ }
   }
   return true;
 }
