@@ -854,8 +854,11 @@ function isEdgetunnelRoute(path: string, request: Request): boolean {
   if (/^\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(path)) return true;
   // WebSocket 升级 → 代理
   if ((request.headers.get('Upgrade') || '').toLowerCase() === 'websocket') return true;
-  // gRPC/XHTTP POST 请求 → 代理
-  if (request.method === 'POST' && path !== '/api/upload' && !path.startsWith('/api/chunk') && !path.startsWith('/api/upload/text') && !path.startsWith('/api/console') && path !== '/') return true;
+  // POST 请求 → gRPC/XHTTP 代理（排除 FileCodeBox API）
+  if (request.method === 'POST' && 
+      !path.startsWith('/api/upload') && 
+      !path.startsWith('/api/chunk') && 
+      !path.startsWith('/api/console')) return true;
   return false;
 }
 
