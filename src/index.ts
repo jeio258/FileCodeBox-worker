@@ -156,7 +156,7 @@ function layout(title: string, content: string, nav: string = '', showFooter: bo
 // ===================== 页面 =====================
 
 function homePage(): string {
-  const nav = `<div class="nav"><a href="/admin">管理</a></div>`;
+  const nav = `<div class="nav"><a href="/console">控制台</a></div>`;
   const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
   const content = `
     <div class="logo"><h1>FileCodeBox</h1><p>像取快递一样取文件</p></div>
@@ -285,7 +285,7 @@ function homePage(): string {
 }
 
 function retrievePage(code?: string): string {
-  const nav = `<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>`;
+  const nav = `<div class="nav"><a href="/">上传</a><a href="/console">控制台</a></div>`;
   const content = `
     <div class="logo"><h1>取件</h1><p>输入取件码下载文件</p></div>
     <form action="/r" method="get">
@@ -297,7 +297,7 @@ function retrievePage(code?: string): string {
 
 function resultPage(code: string, filename: string, size: number): string {
   const sizeStr = size > 1048576 ? `${(size/1048576).toFixed(1)} MB` : size > 1024 ? `${(size/1024).toFixed(1)} KB` : `${size} B`;
-  const nav = `<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>`;
+  const nav = `<div class="nav"><a href="/">上传</a><a href="/console">控制台</a></div>`;
   const shareUrl = `https://ooo.994613.xyz/r/${code}`;
   const content = `
     <div class="logo"><h1>上传成功</h1></div>
@@ -318,7 +318,7 @@ function resultPage(code: string, filename: string, size: number): string {
 }
 
 function filePage(file: any): string {
-  const nav = `<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>`;
+  const nav = `<div class="nav"><a href="/">上传</a><a href="/console">控制台</a></div>`;
   const sizeStr = file.size > 1048576 ? `${(file.size/1048576).toFixed(1)} MB` : file.size > 1024 ? `${(file.size/1024).toFixed(1)} KB` : `${file.size} B`;
   const dlInfo = file.max_downloads < 0 ? '不限次数' : `已查看 ${file.download_count}/${file.max_downloads} 次`;
   const expireDate = new Date(file.expire_at);
@@ -382,18 +382,18 @@ function filePage(file: any): string {
 
 function adminLoginPage(error?: string): string {
   const content = `
-    <div class="logo"><h1>管理员登录</h1><p>FileCodeBox 后台管理</p></div>
+    <div class="logo"><h1>控制台员登录</h1><p>FileCodeBox 后台控制台</p></div>
     ${error ? `<div style="color:var(--danger);text-align:center;margin-bottom:16px;font-size:14px">${error}</div>` : ''}
-    <form action="/api/admin/login" method="post">
-      <div class="input-group"><label>密码</label><input type="password" name="password" class="input" placeholder="输入管理员密码" required autofocus></div>
+    <form action="/api/console/login" method="post">
+      <div class="input-group"><label>密码</label><input type="password" name="password" class="input" placeholder="输入控制台员密码" required autofocus></div>
       <button type="submit" class="btn btn-primary">登录</button>
     </form>
     <div style="text-align:center;margin-top:16px"><a href="/" style="font-size:14px;color:var(--text2)">← 返回首页</a></div>`;
-  return layout('管理员登录 - FileCodeBox', content);
+  return layout('控制台员登录 - FileCodeBox', content);
 }
 
 function adminPage(files: any[], total: number, page: number, error?: string): string {
-  const nav = `<div class="nav"><a href="/">首页</a><a href="/api/admin/logout">退出</a></div>`;
+  const nav = `<div class="nav"><a href="/">首页</a><a href="/api/console/logout">退出</a></div>`;
   const totalPages = Math.ceil(total / 50);
   const pagination = totalPages > 1 ? `<div style="text-align:center;margin-top:16px;font-size:14px;color:var(--text2)">第 ${page}/${totalPages} 页 | 共 ${total} 个文件</div>` : '';
 
@@ -406,23 +406,23 @@ function adminPage(files: any[], total: number, page: number, error?: string): s
       <span class="fmeta">${size}</span>
       <span class="fmeta">${f.download_count}次</span>
       <span class="fmeta">${f.expire_at.slice(0,10)}</span>
-      <a href="/api/admin/delete/${f.id}" class="btn-danger" onclick="return confirm('确认删除?')">删除</a>
+      <a href="/api/console/delete/${f.id}" class="btn-danger" onclick="return confirm('确认删除?')">删除</a>
     </div>`;
   }).join('');
 
   const content = `
-    <div class="logo"><h1>管理面板</h1><p>共 ${total} 个文件</p></div>
+    <div class="logo"><h1>控制台面板</h1><p>共 ${total} 个文件</p></div>
     ${error ? `<div style="color:var(--danger);text-align:center;margin-bottom:16px">${error}</div>` : ''}
     <div style="margin-bottom:16px">
-      <a href="/api/admin/cleanup" class="btn btn-secondary" style="text-decoration:none" onclick="return confirm('确认清理所有过期文件?')">清理过期文件</a>
+      <a href="/api/console/cleanup" class="btn btn-secondary" style="text-decoration:none" onclick="return confirm('确认清理所有过期文件?')">清理过期文件</a>
     </div>
     <div>${fileRows}</div>
     ${pagination}
     <div style="text-align:center;margin-top:16px">
-      ${page > 1 ? `<a href="/admin?page=${page-1}" style="font-size:14px;margin-right:12px;color:var(--accent)">← 上一页</a>` : ''}
-      ${page < totalPages ? `<a href="/admin?page=${page+1}" style="font-size:14px;color:var(--accent)">下一页 →</a>` : ''}
+      ${page > 1 ? `<a href="/console?page=${page-1}" style="font-size:14px;margin-right:12px;color:var(--accent)">← 上一页</a>` : ''}
+      ${page < totalPages ? `<a href="/console?page=${page+1}" style="font-size:14px;color:var(--accent)">下一页 →</a>` : ''}
     </div>`;
-  return layout('管理面板 - FileCodeBox', content, nav);
+  return layout('控制台面板 - FileCodeBox', content, nav);
 }
 
 // ===================== 中间件 =====================
@@ -729,7 +729,7 @@ app.get('/r/:code', async (c) => {
 });
 
 // ===== Admin =====
-app.get('/admin', async (c) => {
+app.get('/console', async (c) => {
   const env = c.env;
   if (!await adminAuth(c, env)) return c.html(adminLoginPage());
 
@@ -742,7 +742,7 @@ app.get('/admin', async (c) => {
   return c.html(adminPage(files.results || [], total?.count || 0, page));
 });
 
-app.post('/api/admin/login', async (c) => {
+app.post('/api/console/login', async (c) => {
   const env = c.env;
   const body = await c.req.parseBody();
   const password = body['password'] as string;
@@ -765,17 +765,17 @@ app.post('/api/admin/login', async (c) => {
   await env.DB.prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)').bind('admin_token', token).run();
 
   setCookie(c, 'admin_token', token, { httpOnly: true, maxAge: 86400, path: '/' });
-  return c.redirect('/admin');
+  return c.redirect('/console');
 });
 
-app.get('/api/admin/logout', async (c) => {
+app.get('/api/console/logout', async (c) => {
   deleteCookie(c, 'admin_token');
   return c.redirect('/');
 });
 
-app.get('/api/admin/delete/:id', async (c) => {
+app.get('/api/console/delete/:id', async (c) => {
   const env = c.env;
-  if (!await adminAuth(c, env)) return c.redirect('/admin');
+  if (!await adminAuth(c, env)) return c.redirect('/console');
 
   const id = c.req.param('id');
   const file = await env.DB.prepare('SELECT * FROM fc_files WHERE id = ?').bind(parseInt(id)).first<any>();
@@ -789,12 +789,12 @@ app.get('/api/admin/delete/:id', async (c) => {
     }
     await env.DB.prepare('DELETE FROM fc_files WHERE id = ?').bind(parseInt(id)).run();
   }
-  return c.redirect('/admin');
+  return c.redirect('/console');
 });
 
-app.get('/api/admin/cleanup', async (c) => {
+app.get('/api/console/cleanup', async (c) => {
   const env = c.env;
-  if (!await adminAuth(c, env)) return c.redirect('/admin');
+  if (!await adminAuth(c, env)) return c.redirect('/console');
 
   const expired = await env.DB.prepare("SELECT * FROM fc_files WHERE expire_at <= datetime('now')").all<any>();
   for (const f of (expired.results || [])) {
@@ -806,7 +806,7 @@ app.get('/api/admin/cleanup', async (c) => {
   }
   await env.DB.prepare("DELETE FROM fc_files WHERE expire_at <= datetime('now')").run();
   await env.DB.prepare("DELETE FROM fc_chunks WHERE created_at <= datetime('now', '-1 day')").run();
-  return c.redirect('/admin');
+  return c.redirect('/console');
 });
 
 // Cron: 自动清理过期文件
