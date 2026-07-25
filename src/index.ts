@@ -56,7 +56,7 @@ async function hashPassword(pwd: string): Promise<string> {
 
 async function initDB(db: D1Database) {
   const stmts = [
-    'CREATE TABLE IF NOT EXISTS fc_files (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, filename TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mime_type TEXT DEFAULT "application/octet-stream", expire_at TEXT NOT NULL, download_count INTEGER DEFAULT 0, max_downloads INTEGER DEFAULT -1, created_at TEXT NOT NULL, ip TEXT DEFAULT "", is_text INTEGER DEFAULT 0)',
+    'CREATE TABLE IF NOT EXISTS fc_files (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, filename TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mime_type TEXT DEFAULT "application/octet-stream", expire_at TEXT NOT NULL, download_count INTEGER DEFAULT 0, max_downloads INTEGER DEFAULT -1, created_at TEXT NOT NULL, ip TEXT DEFAULT "", is_text INTEGER DEFAULT 0, chunk_count INTEGER DEFAULT 0)',
     'CREATE INDEX IF NOT EXISTS idx_fc_code ON fc_files(code)',
     'CREATE INDEX IF NOT EXISTS idx_fc_expire ON fc_files(expire_at)',
     'CREATE TABLE IF NOT EXISTS fc_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
@@ -616,31 +616,18 @@ app.post('/api/chunk/complete/:uploadId', async (c) => {
       return c.json({ error: '取件码已被占用' }, 409);
     }
 
-    // Assemble chunks
-    const parts: ArrayBuffer[] = [];
+    // Store chunks as separate KV keys: file:{code}:0, file:{code}:1, ...
     for (let i = 0; i < session.total_chunks; i++) {
       const chunkData = await env.FILE_STORE.get(`chunk:${uploadId}:${i}`, 'arrayBuffer');
       if (!chunkData) return c.json({ error: `Chunk ${i} data missing` }, 500);
-      parts.push(chunkData);
-    }
-
-    const totalLength = parts.reduce((sum, p) => sum + p.byteLength, 0);
-    const assembled = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const p of parts) {
-      assembled.set(new Uint8Array(p), offset);
-      offset += p.byteLength;
+      await env.FILE_STORE.put(`file:${code}:${i}`, chunkData);
     }
 
     const expireAt = new Date(Date.now() + expireDays * 86400000).toISOString();
 
-    await env.FILE_STORE.put(`file:${code}`, assembled.buffer, {
-      metadata: { filename: session.file_name, mimeType: session.mime_type, size: session.file_size }
-    });
-
     await env.DB.prepare(
-      'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(code, session.file_name, session.file_size, session.mime_type, expireAt, maxDownloads, new Date().toISOString()).run();
+      'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at, chunk_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(code, session.file_name, session.file_size, session.mime_type, expireAt, maxDownloads, new Date().toISOString(), session.total_chunks).run();
 
     // Cleanup chunks
     for (let i = 0; i < session.total_chunks; i++) {
@@ -672,6 +659,29 @@ app.get('/api/download/:code', async (c) => {
   }
 
   await env.DB.prepare('UPDATE fc_files SET download_count = download_count + 1 WHERE code = ?').bind(code).run();
+
+  // Handle chunked files (>25MB, stored as file:{code}:0, file:{code}:1, ...)
+  if (file.chunk_count > 0) {
+    const parts: ArrayBuffer[] = [];
+    for (let i = 0; i < file.chunk_count; i++) {
+      const chunkData = await env.FILE_STORE.get(`file:${code}:${i}`, 'arrayBuffer');
+      if (!chunkData) {
+        return c.html(layout('错误', '<div class="logo"><h1>文件数据不完整</h1></div><a href="/" class="btn btn-secondary" style="text-decoration:none;margin-top:16px">返回</a>'));
+      }
+      parts.push(chunkData);
+    }
+    const totalLen = parts.reduce((s, p) => s + p.byteLength, 0);
+    const assembled = new Uint8Array(totalLen);
+    let off = 0;
+    for (const p of parts) { assembled.set(new Uint8Array(p), off); off += p.byteLength; }
+    return new Response(assembled.buffer, {
+      headers: {
+        'Content-Type': file.mime_type || 'application/octet-stream',
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+        'Content-Length': String(file.size),
+      }
+    });
+  }
 
   const fileData = await env.FILE_STORE.get(`file:${code}`, 'arrayBuffer');
   if (!fileData) {
@@ -762,7 +772,13 @@ app.get('/api/admin/delete/:id', async (c) => {
   const id = c.req.param('id');
   const file = await env.DB.prepare('SELECT * FROM fc_files WHERE id = ?').bind(parseInt(id)).first<any>();
   if (file) {
-    await env.FILE_STORE.delete(`file:${file.code}`);
+    if (file.chunk_count > 0) {
+      for (let i = 0; i < file.chunk_count; i++) {
+        await env.FILE_STORE.delete(`file:${file.code}:${i}`);
+      }
+    } else {
+      await env.FILE_STORE.delete(`file:${file.code}`);
+    }
     await env.DB.prepare('DELETE FROM fc_files WHERE id = ?').bind(parseInt(id)).run();
   }
   return c.redirect('/admin');
@@ -774,10 +790,13 @@ app.get('/api/admin/cleanup', async (c) => {
 
   const expired = await env.DB.prepare("SELECT * FROM fc_files WHERE expire_at <= datetime('now')").all<any>();
   for (const f of (expired.results || [])) {
-    await env.FILE_STORE.delete(`file:${f.code}`);
+    if (f.chunk_count > 0) {
+      for (let i = 0; i < f.chunk_count; i++) await env.FILE_STORE.delete(`file:${f.code}:${i}`);
+    } else {
+      await env.FILE_STORE.delete(`file:${f.code}`);
+    }
   }
   await env.DB.prepare("DELETE FROM fc_files WHERE expire_at <= datetime('now')").run();
-  // Clean orphaned chunks older than 1 day
   await env.DB.prepare("DELETE FROM fc_chunks WHERE created_at <= datetime('now', '-1 day')").run();
   return c.redirect('/admin');
 });
@@ -786,7 +805,11 @@ app.get('/api/admin/cleanup', async (c) => {
 app.get('/api/cron/cleanup', async (c) => {
   const expired = await c.env.DB.prepare("SELECT * FROM fc_files WHERE expire_at <= datetime('now')").all<any>();
   for (const f of (expired.results || [])) {
-    await c.env.FILE_STORE.delete(`file:${f.code}`);
+    if (f.chunk_count > 0) {
+      for (let i = 0; i < f.chunk_count; i++) await c.env.FILE_STORE.delete(`file:${f.code}:${i}`);
+    } else {
+      await c.env.FILE_STORE.delete(`file:${f.code}`);
+    }
   }
   await c.env.DB.prepare("DELETE FROM fc_files WHERE expire_at <= datetime('now')").run();
   await c.env.DB.prepare("DELETE FROM fc_chunks WHERE created_at <= datetime('now', '-1 day')").run();
