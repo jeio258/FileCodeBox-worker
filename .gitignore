@@ -3,3 +3,4 @@ dist/
 .dev.vars
 .DS_Store
 *.log
+.wrangler/
