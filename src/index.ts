@@ -835,7 +835,29 @@ app.get('/api/init', async (c) => {
   }
 });
 
+// 兜底: 未知路径显示 FileCodeBox 首页（替代 nginx 伪装页）
+app.all('*', (c) => c.html(homePage()));
+
 // ===================== 合并导出: FileCodeBox + Edgetunnel =====================
+
+// Edgetunnel 专属路径（代理 + 管理 + 订阅）
+const EDGETUNNEL_PATHS = new Set([
+  '/admin', '/login', '/logout', '/sub', '/version', '/locations', '/robots.txt'
+]);
+
+function isEdgetunnelRoute(path: string, request: Request): boolean {
+  // 精确匹配的管理/订阅路径
+  if (EDGETUNNEL_PATHS.has(path)) return true;
+  if (path.startsWith('/admin/')) return true;
+  if (path.startsWith('/sub?')) return true;
+  // UUID 路径 (用于订阅/登出)
+  if (/^\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(path)) return true;
+  // WebSocket 升级 → 代理
+  if ((request.headers.get('Upgrade') || '').toLowerCase() === 'websocket') return true;
+  // gRPC/XHTTP POST 请求 → 代理
+  if (request.method === 'POST' && path !== '/api/upload' && !path.startsWith('/api/chunk') && !path.startsWith('/api/upload/text') && !path.startsWith('/api/console') && path !== '/') return true;
+  return false;
+}
 
 export default {
   async fetch(request: Request, env: any, ctx: any) {
@@ -860,7 +882,12 @@ export default {
       return app.fetch(request, env, ctx);
     }
 
-    // 其余交给 edgetunnel (代理/隧道/订阅/管理)
-    return edgetunnel.fetch(request, env, ctx);
+    // Edgetunnel 专属路由 (代理/隧道/订阅/管理)
+    if (isEdgetunnelRoute(path, request)) {
+      return edgetunnel.fetch(request, env, ctx);
+    }
+
+    // 其余所有路径 → FileCodeBox 主页（替代 nginx 伪装页）
+    return app.fetch(request, env, ctx);
   }
 };
