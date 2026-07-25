@@ -19,5 +19,9 @@
   "kv_namespaces": [{
     "binding": "FILE_STORE",
     "id": "c1b91b7c590f41138f985965ddc9b3dc"
+  },
+  {
+    "binding": "KV",
+    "id": "c1b91b7c590f41138f985965ddc9b3dc"
   }]
 }
