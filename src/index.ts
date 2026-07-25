@@ -424,12 +424,16 @@ app.post('/api/admin/login', async (c) => {
   const password = body['password'] as string;
 
   const setting = await env.DB.prepare('SELECT value FROM fc_settings WHERE key = ?').bind('admin_password').first<any>();
-  const correctPwd = setting?.value || env.ADMIN_PASSWORD || 'admin123';
+  const storedPwd = setting?.value || env.ADMIN_PASSWORD || 'admin123';
 
   const hashedInput = await hashPassword(password);
-  const hashedStored = await hashPassword(correctPwd);
+  // storedPwd may already be a SHA-256 hash (64-char hex) — compare directly
+  const storedIsHash = /^[a-f0-9]{64}$/.test(storedPwd);
+  const matches = storedIsHash
+    ? hashedInput === storedPwd
+    : hashedInput === await hashPassword(storedPwd) || password === storedPwd;
 
-  if (hashedInput !== hashedStored && password !== correctPwd) {
+  if (!matches) {
     return c.html(adminLoginPage('密码错误'));
   }
 
