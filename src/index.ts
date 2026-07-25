@@ -149,7 +149,7 @@ function layout(title: string, content: string, nav: string = '', showFooter: bo
 
 function homePage(): string {
   const nav = `<div class="nav"><a href="/admin">管理</a></div>`;
-  const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
+  const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
   const content = `
     <div class="logo"><h1>FileCodeBox</h1><p>像取快递一样取文件</p></div>
     
