@@ -30,7 +30,6 @@ export interface ChunkSession {
 export interface Env {
   DB: D1Database;
   FILE_STORE: KVNamespace;
-  KV: KVNamespace;
   ADMIN_PASSWORD: string;
   MAX_FILE_SIZE: string;
   DEFAULT_EXPIRE_DAYS: string;

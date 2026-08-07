@@ -56,8 +56,7 @@ wrangler d1 create filecodebox-db
 ```jsonc
 {
   "kv_namespaces": [
-    { "binding": "FILE_STORE", "id": "你的KV_ID" },
-    { "binding": "KV", "id": "你的KV_ID" }
+    { "binding": "FILE_STORE", "id": "你的KV_ID" }
   ],
   "d1_databases": [
     { "binding": "DB", "database_name": "filecodebox-db", "database_id": "你的D1_ID" }
@@ -97,10 +96,9 @@ npm run deploy
 部署后进入项目 **Settings** → **Bindings**：
 
 **KV 命名空间绑定：**
-| Binding | 命名空间 |
-|---------|---------|
-| `FILE_STORE` | 新建一个 KV |
-| `KV` | 同上（指向同一个 KV） |
+| Binding | 说明 |
+|---------|------|
+| `FILE_STORE` | 新建一个 KV 命名空间 |
 
 **D1 数据库绑定：**
 | Binding | 数据库 |

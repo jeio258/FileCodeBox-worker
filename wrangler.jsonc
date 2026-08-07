@@ -6,8 +6,7 @@
   "vars": {
     "ADMIN_PASSWORD": "admin123",
     "MAX_FILE_SIZE": "104857600",
-    "DEFAULT_EXPIRE_DAYS": "7",
-    "UUID": "your-uuid-here"
+    "DEFAULT_EXPIRE_DAYS": "7"
   },
   "d1_databases": [{
     "binding": "DB",
@@ -16,10 +15,6 @@
   }],
   "kv_namespaces": [{
     "binding": "FILE_STORE",
-    "id": "c1b91b7c590f41138f985965ddc9b3dc"
-  },
-  {
-    "binding": "KV",
     "id": "c1b91b7c590f41138f985965ddc9b3dc"
   }]
 }
