@@ -1,9 +1,8 @@
-/** 生成 4 位取件码（排除易混淆字符 0/O/1/I） */
+/** 生成 4 位纯数字取件码 */
 export function generateCode(): string {
-  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
   let code = '';
   for (let i = 0; i < 4; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
+    code += Math.floor(Math.random() * 10).toString();
   }
   return code;
 }

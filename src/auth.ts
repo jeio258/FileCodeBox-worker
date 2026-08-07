@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { Env } from './types';
-import { hashPassword, generateCode } from './utils';
+import { hashPassword } from './utils';
 import { getSetting, setSetting } from './db';
 
 /**
