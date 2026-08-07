@@ -1,6 +1,7 @@
 {
   "name": "filecodebox",
   "main": "src/index.ts",
+  "account_id": "ea2143f29e816a521fc066bda417c798",
   "compatibility_date": "2025-08-16",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
