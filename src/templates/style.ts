@@ -298,6 +298,31 @@ textarea.input {
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
+/* ---- upload progress ---- */
+.upload-progress {
+  height: 4px;
+  background: var(--color-rule);
+  border-radius: 2px;
+  margin-top: 4px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  display: none;
+}
+.upload-progress-bar {
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: 2px;
+  transition: width 0.2s var(--ease-out);
+  width: 0;
+}
+.upload-status {
+  font-size: 12px;
+  color: var(--color-ink-2);
+  text-align: center;
+  margin-bottom: 10px;
+  display: none;
+}
+
 /* ---- text content ---- */
 .text-content {
   background: var(--color-paper);

@@ -36,6 +36,8 @@ export function homePage(): string {
           <div class="input-group" style="flex:1"><label>过期天数</label><input type="number" name="expire_days" min="1" max="365" value="7" class="input" placeholder="7"></div>
         </div>
         <div class="input-group"><label>自定义取件码 <span style="font-weight:400;color:var(--color-ink-2)">（可选，留空自动生成）</span></label><input type="text" name="code" class="input" placeholder="4 位数字取件码" maxlength="4" inputmode="numeric" pattern="[0-9]{0,4}"></div>
+        <div class="upload-progress" id="uploadProgress"><div class="upload-progress-bar" id="uploadProgressBar"></div></div>
+        <div class="upload-status" id="uploadStatus"></div>
         <button type="submit" id="submitBtn" class="btn btn-primary">上传并获取取件码</button>
       </form>
     </div>
@@ -59,13 +61,14 @@ export function homePage(): string {
       document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active') });
       document.getElementById('tab-' + name).classList.add('active');
     }
-    async function handleUpload(e) {
+    function handleUpload(e) {
       e.preventDefault();
       var file = document.getElementById('fileInput').files[0];
       if (!file) return;
       var btn = document.getElementById('submitBtn');
-      btn.disabled = true;
-      btn.textContent = '\u4e0a\u4f20\u4e2d\u2026';
+      var progress = document.getElementById('uploadProgress');
+      var progressBar = document.getElementById('uploadProgressBar');
+      var status = document.getElementById('uploadStatus');
 
       var code = document.querySelector('[name="code"]').value || '';
       var maxDownloads = document.querySelector('[name="max_downloads"]').value || '-1';
@@ -75,29 +78,56 @@ export function homePage(): string {
                 '&max_downloads=' + encodeURIComponent(maxDownloads) +
                 '&expire_days=' + encodeURIComponent(expireDays);
 
-      try {
-        // 原始字节流直传：body 直接是文件流，无 multipart 编码开销
-        var resp = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'X-Filename': encodeURIComponent(file.name),
-            'Content-Type': file.type || 'application/octet-stream',
-          },
-          body: file,
-        });
-        var data = await resp.json();
-        if (data.code) {
-          window.location.href = '/r/' + data.code;
-        } else {
-          alert(data.error || '\u4e0a\u4f20\u5931\u8d25');
-          btn.disabled = false;
-          btn.textContent = '\u4e0a\u4f20\u5e76\u83b7\u53d6\u53d6\u4ef6\u7801';
-        }
-      } catch (err) {
-        alert('\u4e0a\u4f20\u5931\u8d25: ' + err.message);
+      function resetUpload() {
         btn.disabled = false;
         btn.textContent = '\u4e0a\u4f20\u5e76\u83b7\u53d6\u53d6\u4ef6\u7801';
+        progress.style.display = 'none';
+        status.style.display = 'none';
+        progressBar.style.width = '0%';
       }
+
+      // 用 XMLHttpRequest 获取原生上传进度（fetch 不支持）
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+
+      btn.disabled = true;
+      btn.textContent = '\u4e0a\u4f20\u4e2d\u2026';
+      progress.style.display = 'block';
+      status.style.display = 'block';
+      status.textContent = '\u4e0a\u4f20\u4e2d 0%';
+
+      xhr.upload.onprogress = function(event) {
+        if (event.lengthComputable) {
+          var pct = Math.round(event.loaded / event.total * 100);
+          progressBar.style.width = pct + '%';
+          status.textContent = '\u4e0a\u4f20\u4e2d ' + pct + '%';
+        }
+      };
+
+      xhr.onload = function() {
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (data.code) {
+            status.textContent = '\u4e0a\u4f20\u5b8c\u6210\uff0c\u8df3\u8f6c\u4e2d\u2026';
+            window.location.href = '/r/' + data.code;
+          } else {
+            alert(data.error || '\u4e0a\u4f20\u5931\u8d25');
+            resetUpload();
+          }
+        } catch (err) {
+          alert('\u4e0a\u4f20\u5931\u8d25');
+          resetUpload();
+        }
+      };
+
+      xhr.onerror = function() {
+        alert('\u4e0a\u4f20\u5931\u8d25\uff1a\u7f51\u7edc\u9519\u8bef');
+        resetUpload();
+      };
+
+      xhr.send(file);
     }
     </script>`;
   return layout('FileCodeBox', content, nav);
