@@ -29,7 +29,7 @@ export interface ChunkSession {
 /** Cloudflare Worker 环境绑定 */
 export interface Env {
   DB: D1Database;
-  FILE_STORE: KVNamespace;
+  FILE_STORE: R2Bucket;
   ADMIN_PASSWORD: string;
   MAX_FILE_SIZE: string;
   DEFAULT_EXPIRE_DAYS: string;

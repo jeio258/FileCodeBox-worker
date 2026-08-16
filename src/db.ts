@@ -158,7 +158,7 @@ export async function listFiles(
 
 export async function cleanupExpired(
   db: D1Database,
-  kv: KVNamespace,
+  bucket: R2Bucket,
 ): Promise<number> {
   const expired = await db
     .prepare("SELECT * FROM fc_files WHERE expire_at <= datetime('now')")
@@ -167,10 +167,10 @@ export async function cleanupExpired(
   for (const f of files) {
     if (f.chunk_count > 0) {
       for (let i = 0; i < f.chunk_count; i++) {
-        await kv.delete(`file:${f.code}:${i}`);
+        await bucket.delete(`file:${f.code}:${i}`);
       }
     } else {
-      await kv.delete(`file:${f.code}`);
+      await bucket.delete(`file:${f.code}`);
     }
   }
   if (files.length > 0) {
@@ -178,6 +178,14 @@ export async function cleanupExpired(
   }
   // 同时清理超过 1 天的废弃分片会话
   await db.prepare("DELETE FROM fc_chunks WHERE created_at <= datetime('now', '-1 day')").run();
+  // 清理孤儿分片临时对象（上传中断遗留在 R2 中的 chunk:* 对象）
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  const chunkList = await bucket.list({ prefix: 'chunk:' });
+  for (const obj of chunkList.objects) {
+    if (obj.uploaded.getTime() < cutoff) {
+      await bucket.delete(obj.key);
+    }
+  }
   return files.length;
 }
 

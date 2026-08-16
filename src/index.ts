@@ -104,7 +104,8 @@ app.post('/api/upload', async (c) => {
 
     const buffer = await file.arrayBuffer();
     await env.FILE_STORE.put(`file:${code}`, buffer, {
-      metadata: { filename: file.name, mimeType: file.type, size: file.size },
+      httpMetadata: { contentType: file.type || 'application/octet-stream' },
+      customMetadata: { filename: file.name, size: String(file.size) },
     });
 
     await insertFile(env.DB, {
@@ -148,7 +149,8 @@ app.post('/api/upload/text', async (c) => {
     const title = text.replace(/\s+/g, ' ').slice(0, 50) + (text.length > 50 ? '…' : '');
 
     await env.FILE_STORE.put(`file:${code}`, text, {
-      metadata: { filename: title, mimeType: 'text/plain', size: textSize },
+      httpMetadata: { contentType: 'text/plain' },
+      customMetadata: { filename: title, size: String(textSize) },
     });
 
     await insertFile(env.DB, {
@@ -173,8 +175,9 @@ app.get('/api/text/:code', async (c) => {
   if (!file || file.is_text !== 1) return c.text('Not found', 404);
 
   await incrementDownload(c.env.DB, code);
-  const text = await c.env.FILE_STORE.get(`file:${code}`, 'text');
-  return c.text(text || '');
+  const textObj = await c.env.FILE_STORE.get(`file:${code}`);
+  const text = textObj ? await textObj.text() : '';
+  return c.text(text);
 });
 
 // ===================== 分片上传 =====================
@@ -211,7 +214,7 @@ app.post('/api/chunk/upload/:uploadId/:index', async (c) => {
   if (!chunk) return c.json({ error: 'No chunk' }, 400);
 
   const buffer = await chunk.arrayBuffer();
-  await env.FILE_STORE.put(`chunk:${uploadId}:${index}`, buffer, { expirationTtl: 3600 });
+  await env.FILE_STORE.put(`chunk:${uploadId}:${index}`, buffer);
   await saveChunk(env.DB, session, index);
 
   return c.json({ ok: true, index });
@@ -239,9 +242,10 @@ app.post('/api/chunk/complete/:uploadId', async (c) => {
       return c.json({ error: '取件码已被占用' }, 409);
     }
 
-    // 将分片从临时 KV 移动到正式存储
+    // 将分片从临时存储移动到正式存储
     for (let i = 0; i < session.total_chunks; i++) {
-      const chunkData = await env.FILE_STORE.get(`chunk:${uploadId}:${i}`, 'arrayBuffer');
+      const chunkObj = await env.FILE_STORE.get(`chunk:${uploadId}:${i}`);
+      const chunkData = chunkObj ? await chunkObj.arrayBuffer() : null;
       if (!chunkData) return c.json({ error: `Chunk ${i} data missing` }, 500);
       await env.FILE_STORE.put(`file:${code}:${i}`, chunkData);
     }
@@ -293,7 +297,8 @@ app.get('/api/download/:code', async (c) => {
   if (file.chunk_count > 0) {
     const parts: ArrayBuffer[] = [];
     for (let i = 0; i < file.chunk_count; i++) {
-      const chunkData = await env.FILE_STORE.get(`file:${code}:${i}`, 'arrayBuffer');
+      const chunkObj = await env.FILE_STORE.get(`file:${code}:${i}`);
+      const chunkData = chunkObj ? await chunkObj.arrayBuffer() : null;
       if (!chunkData) {
         return c.html(errorPage('文件数据不完整', '请联系管理员'));
       }
@@ -310,7 +315,8 @@ app.get('/api/download/:code', async (c) => {
   }
 
   // 单文件 — 直接返回
-  const fileData = await env.FILE_STORE.get(`file:${code}`, 'arrayBuffer');
+  const fileObj = await env.FILE_STORE.get(`file:${code}`);
+  const fileData = fileObj ? await fileObj.arrayBuffer() : null;
   if (!fileData) {
     return c.html(errorPage('文件不存在', '该文件可能已被清理'));
   }

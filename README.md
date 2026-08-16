@@ -40,9 +40,8 @@ npm install
 #### 4. 创建云资源
 
 ```bash
-# 创建 KV 命名空间
-wrangler kv namespace create FILE_STORE
-# 返回类似: id = "abc123..."  ← 记下来
+# 创建 R2 存储桶
+wrangler r2 bucket create filecodebox
 
 # 创建 D1 数据库
 wrangler d1 create filecodebox-db
@@ -55,8 +54,8 @@ wrangler d1 create filecodebox-db
 
 ```jsonc
 {
-  "kv_namespaces": [
-    { "binding": "FILE_STORE", "id": "你的KV_ID" }
+  "r2_buckets": [
+    { "binding": "FILE_STORE", "bucket_name": "filecodebox" }
   ],
   "d1_databases": [
     { "binding": "DB", "database_name": "filecodebox-db", "database_id": "你的D1_ID" }
@@ -95,10 +94,10 @@ npm run deploy
 
 部署后进入项目 **Settings** → **Bindings**：
 
-**KV 命名空间绑定：**
+**R2 存储桶绑定：**
 | Binding | 说明 |
 |---------|------|
-| `FILE_STORE` | 新建一个 KV 命名空间 |
+| `FILE_STORE` | 新建一个 R2 存储桶，命名为 `filecodebox` |
 
 **D1 数据库绑定：**
 | Binding | 数据库 |
@@ -179,7 +178,7 @@ FileCodeBox-worker/
 
 - **框架**: [Hono](https://hono.dev/)
 - **数据库**: Cloudflare D1 (SQLite)
-- **存储**: Cloudflare KV
+- **存储**: Cloudflare R2
 - **运行时**: Cloudflare Workers
 - **语言**: TypeScript
 
