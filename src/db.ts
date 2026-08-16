@@ -53,7 +53,7 @@ export async function getFileByCode(
   code: string,
 ): Promise<FileRecord | null> {
   return db
-    .prepare("SELECT * FROM fc_files WHERE code = ? AND expire_at > datetime('now')")
+    .prepare("SELECT * FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
     .bind(code)
     .first<FileRecord>();
 }
@@ -67,7 +67,7 @@ export async function getFileById(
 
 export async function isCodeTaken(db: D1Database, code: string): Promise<boolean> {
   const row = await db
-    .prepare("SELECT id FROM fc_files WHERE code = ? AND expire_at > datetime('now')")
+    .prepare("SELECT id FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
     .bind(code)
     .first();
   return row !== null;
@@ -161,7 +161,7 @@ export async function cleanupExpired(
   bucket: R2Bucket,
 ): Promise<number> {
   const expired = await db
-    .prepare("SELECT * FROM fc_files WHERE expire_at <= datetime('now')")
+    .prepare("SELECT * FROM fc_files WHERE datetime(expire_at) <= datetime('now')")
     .all<FileRecord>();
   const files = expired.results ?? [];
   for (const f of files) {
@@ -174,7 +174,7 @@ export async function cleanupExpired(
     }
   }
   if (files.length > 0) {
-    await db.prepare("DELETE FROM fc_files WHERE expire_at <= datetime('now')").run();
+    await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
   }
   // 同时清理超过 1 天的废弃分片会话
   await db.prepare("DELETE FROM fc_chunks WHERE created_at <= datetime('now', '-1 day')").run();
