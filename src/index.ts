@@ -11,7 +11,6 @@ import { generateCode } from './utils';
 import {
   initDB,
   getFileByCode,
-  getFileById,
   isCodeTaken,
   insertFile,
   incrementDownload,
@@ -45,10 +44,6 @@ app.use('*', async (c, next) => {
   c.res.headers.set('Referrer-Policy', 'no-referrer');
 });
 
-// 支持 /filecodebox 前缀路由
-const filebox = new Hono<{ Bindings: Env }>();
-app.route('/filecodebox', filebox);
-
 // ===================== 助手函数 =====================
 
 function getBaseUrl(c: Context<{ Bindings: Env }>): string {
@@ -64,16 +59,22 @@ function expireAt(days: number): string {
 // ===================== 页面路由 =====================
 
 // 首页
-app.get('/', (c) => c.html(homePage()));
+// 首页（静态，可缓存）
+app.get('/', (c) => {
+  c.header('Cache-Control', 'public, max-age=300');
+  return c.html(homePage());
+});
 
-// 取件页
+// 取件页（静态，可缓存）
 app.get('/r', (c) => {
   const code = (c.req.query('code') || '').trim();
   if (code) return c.redirect(`/r/${code}`);
+  c.header('Cache-Control', 'public, max-age=300');
   return c.html(retrievePage());
 });
 
 app.get('/r/:code', async (c) => {
+  c.header('Cache-Control', 'no-store');
   const code = c.req.param('code').trim();
   const file = await getFileByCode(c.env.DB, code);
   if (!file) return c.html(retrievePage(code));
@@ -343,6 +344,7 @@ app.get('/api/info/:code', async (c) => {
 
 // 管理首页（受保护，使用 /admin 路径）
 app.get('/admin', async (c) => {
+  c.header('Cache-Control', 'no-store');
   const env = c.env;
   if (!(await adminAuth(c, env))) return c.html(adminLoginPage());
 

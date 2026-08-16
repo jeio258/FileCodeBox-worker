@@ -34,10 +34,3 @@ export interface Env {
   MAX_FILE_SIZE: string;
   DEFAULT_EXPIRE_DAYS: string;
 }
-
-/** KV 中存储的文件元数据 */
-export interface FileMeta {
-  filename: string;
-  mimeType: string;
-  size: number;
-}

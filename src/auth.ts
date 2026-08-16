@@ -62,23 +62,3 @@ export async function handleAdminLogin(
 export function handleAdminLogout(c: Context): void {
   deleteCookie(c, 'admin_token', { path: '/' });
 }
-
-// ---- 简易登录速率限制（KV based） ----
-
-const RATE_LIMIT_WINDOW = 60; // 秒
-const RATE_LIMIT_MAX = 5;     // 窗口内最大尝试次数
-
-export async function checkLoginRateLimit(
-  kv: KVNamespace,
-  ip: string,
-): Promise<boolean> {
-  const key = `ratelimit:login:${ip}`;
-  const val = await kv.get(key);
-  const count = val ? parseInt(val) : 0;
-  if (count >= RATE_LIMIT_MAX) return false;
-
-  await kv.put(key, String(count + 1), {
-    expirationTtl: RATE_LIMIT_WINDOW,
-  });
-  return true;
-}
