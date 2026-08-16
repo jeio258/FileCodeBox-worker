@@ -103,8 +103,8 @@ app.post('/api/upload', async (c) => {
       return c.html(errorPage('取件码已被占用', '请换一个取件码重试'));
     }
 
-    const buffer = await file.arrayBuffer();
-    await env.FILE_STORE.put(`file:${code}`, buffer, {
+    // 流式写入 R2，跳过 arrayBuffer 内存拷贝
+    await env.FILE_STORE.put(`file:${code}`, file.stream(), {
       httpMetadata: { contentType: file.type || 'application/octet-stream' },
       customMetadata: { filename: file.name, size: String(file.size) },
     });
@@ -214,8 +214,8 @@ app.post('/api/chunk/upload/:uploadId/:index', async (c) => {
   const chunk = body['chunk'] as File | undefined;
   if (!chunk) return c.json({ error: 'No chunk' }, 400);
 
-  const buffer = await chunk.arrayBuffer();
-  await env.FILE_STORE.put(`chunk:${uploadId}:${index}`, buffer);
+  // 流式写入 R2，跳过 arrayBuffer 内存拷贝
+  await env.FILE_STORE.put(`chunk:${uploadId}:${index}`, chunk.stream());
   await saveChunk(env.DB, session, index);
 
   return c.json({ ok: true, index });
@@ -424,4 +424,12 @@ app.get('/api/init', async (c) => {
 
 app.all('*', (c) => c.html(homePage()));
 
-export default app;
+// ===================== 导出 =====================
+// fetch: Hono 处理所有 HTTP 请求
+// scheduled: Cloudflare Cron 触发器自动清理过期文件
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(cleanupExpired(env.DB, env.FILE_STORE));
+  },
+};
