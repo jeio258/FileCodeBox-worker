@@ -4,6 +4,10 @@
   "account_id": "ea2143f29e816a521fc066bda417c798",
   "compatibility_date": "2025-08-16",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "ooo.994613.xyz/*", "zone_name": "994613.xyz" },
+    { "pattern": "vvv.994613.xyz/*", "zone_name": "994613.xyz" }
+  ],
   "vars": {
     "ADMIN_PASSWORD": "admin123",
     "MAX_FILE_SIZE": "104857600",
