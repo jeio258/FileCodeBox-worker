@@ -298,30 +298,6 @@ textarea.input {
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
-/* ---- chunk upload ---- */
-.chunk-progress {
-  height: 4px;
-  background: var(--color-rule);
-  border-radius: 2px;
-  margin-top: 10px;
-  overflow: hidden;
-  display: none;
-}
-.chunk-progress-bar {
-  height: 100%;
-  background: var(--color-accent);
-  border-radius: 2px;
-  transition: width 0.2s;
-  width: 0;
-}
-.chunk-status {
-  font-size: 12px;
-  color: var(--color-ink-2);
-  text-align: center;
-  margin-top: 6px;
-  display: none;
-}
-
 /* ---- text content ---- */
 .text-content {
   background: var(--color-paper);

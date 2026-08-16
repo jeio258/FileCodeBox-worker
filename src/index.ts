@@ -17,11 +17,6 @@ import {
   deleteFileRecord,
   listFiles,
   cleanupExpired,
-  initChunkSession,
-  getChunkSession,
-  saveChunk,
-  countUploadedChunks,
-  deleteChunkSession,
 } from './db';
 import { adminAuth, handleAdminLogin, handleAdminLogout } from './auth';
 import {
@@ -86,41 +81,41 @@ app.get('/r/:code', async (c) => {
 app.post('/api/upload', async (c) => {
   const env = c.env;
   try {
-    const body = await c.req.parseBody();
-    const file = body['file'] as File | undefined;
-    if (!file) return c.html(homePage());
+    // 元数据走 query/header，文件字节流走 raw body，全程零缓冲
+    const code = (c.req.query('code') || '').trim() || generateCode();
+    const maxDownloads = parseInt(c.req.query('max_downloads') || '-1');
+    const expireDays = parseInt(c.req.query('expire_days') || env.DEFAULT_EXPIRE_DAYS || '7');
+    const filename = decodeURIComponent(c.req.header('X-Filename') || '未命名');
+    const mimeType = c.req.header('Content-Type') || 'application/octet-stream';
+    const size = parseInt(c.req.header('Content-Length') || '0');
 
     const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
-    if (file.size > maxSize) {
-      return c.html(errorPage('文件过大', `最大支持 ${Math.floor(maxSize / 1048576)}MB`));
+    if (size > maxSize) {
+      return c.json({ error: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` }, 400);
     }
-
-    const code = (body['code'] as string || '').trim() || generateCode();
-    const maxDownloads = parseInt(body['max_downloads'] as string || '-1');
-    const expireDays = parseInt(body['expire_days'] as string || env.DEFAULT_EXPIRE_DAYS || '7');
 
     if (await isCodeTaken(env.DB, code)) {
-      return c.html(errorPage('取件码已被占用', '请换一个取件码重试'));
+      return c.json({ error: '取件码已被占用' }, 409);
     }
 
-    // 流式写入 R2，跳过 arrayBuffer 内存拷贝
-    await env.FILE_STORE.put(`file:${code}`, file.stream(), {
-      httpMetadata: { contentType: file.type || 'application/octet-stream' },
-      customMetadata: { filename: file.name, size: String(file.size) },
+    // 原始字节流直接写入 R2，不经 parseBody 缓冲
+    await env.FILE_STORE.put(`file:${code}`, c.req.raw.body, {
+      httpMetadata: { contentType: mimeType },
+      customMetadata: { filename, size: String(size) },
     });
 
     await insertFile(env.DB, {
       code,
-      filename: file.name || '未命名',
-      size: file.size,
-      mimeType: file.type || 'application/octet-stream',
+      filename,
+      size,
+      mimeType,
       expireAt: expireAt(expireDays),
       maxDownloads,
     });
 
-    return c.html(resultPage(code, file.name || '未命名', file.size, getBaseUrl(c)));
+    return c.json({ code, filename, size });
   } catch (e: any) {
-    return c.html(errorPage('上传失败', e.message));
+    return c.json({ error: e.message }, 500);
   }
 });
 
@@ -181,98 +176,6 @@ app.get('/api/text/:code', async (c) => {
   return c.text(text);
 });
 
-// ===================== 分片上传 =====================
-
-app.post('/api/chunk/init', async (c) => {
-  const env = c.env;
-  const body = await c.req.parseBody();
-  const fileName = (body['file_name'] as string) || '未命名';
-  const fileSize = parseInt(body['file_size'] as string || '0');
-  const chunkSize = parseInt(body['chunk_size'] as string || '5242880');
-  const mimeType = (body['mime_type'] as string) || 'application/octet-stream';
-
-  const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
-  if (fileSize > maxSize) {
-    return c.json({ error: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` }, 400);
-  }
-
-  const uploadId = await initChunkSession(env.DB, { fileName, fileSize, chunkSize, mimeType });
-  const totalChunks = Math.ceil(fileSize / chunkSize);
-
-  return c.json({ upload_id: uploadId, total_chunks: totalChunks, chunk_size: chunkSize });
-});
-
-app.post('/api/chunk/upload/:uploadId/:index', async (c) => {
-  const env = c.env;
-  const uploadId = c.req.param('uploadId');
-  const index = parseInt(c.req.param('index'));
-
-  const session = await getChunkSession(env.DB, uploadId);
-  if (!session) return c.json({ error: 'Upload session not found' }, 404);
-
-  const body = await c.req.parseBody();
-  const chunk = body['chunk'] as File | undefined;
-  if (!chunk) return c.json({ error: 'No chunk' }, 400);
-
-  // 流式写入 R2，跳过 arrayBuffer 内存拷贝
-  await env.FILE_STORE.put(`chunk:${uploadId}:${index}`, chunk.stream());
-  await saveChunk(env.DB, session, index);
-
-  return c.json({ ok: true, index });
-});
-
-app.post('/api/chunk/complete/:uploadId', async (c) => {
-  const env = c.env;
-  const uploadId = c.req.param('uploadId');
-
-  const session = await getChunkSession(env.DB, uploadId);
-  if (!session) return c.json({ error: 'Upload session not found' }, 404);
-
-  const uploadedCount = await countUploadedChunks(env.DB, uploadId);
-  if (uploadedCount < session.total_chunks) {
-    return c.json({ error: `Missing chunks: ${uploadedCount}/${session.total_chunks}` }, 400);
-  }
-
-  try {
-    const body = await c.req.parseBody();
-    const code = ((body['code'] as string) || '').trim() || generateCode();
-    const maxDownloads = parseInt(body['max_downloads'] as string || '-1');
-    const expireDays = parseInt(body['expire_days'] as string || env.DEFAULT_EXPIRE_DAYS || '7');
-
-    if (await isCodeTaken(env.DB, code)) {
-      return c.json({ error: '取件码已被占用' }, 409);
-    }
-
-    // 将分片从临时存储移动到正式存储
-    for (let i = 0; i < session.total_chunks; i++) {
-      const chunkObj = await env.FILE_STORE.get(`chunk:${uploadId}:${i}`);
-      const chunkData = chunkObj ? await chunkObj.arrayBuffer() : null;
-      if (!chunkData) return c.json({ error: `Chunk ${i} data missing` }, 500);
-      await env.FILE_STORE.put(`file:${code}:${i}`, chunkData);
-    }
-
-    await insertFile(env.DB, {
-      code,
-      filename: session.file_name,
-      size: session.file_size,
-      mimeType: session.mime_type,
-      expireAt: expireAt(expireDays),
-      maxDownloads,
-      chunkCount: session.total_chunks,
-    });
-
-    // 清理临时分片
-    for (let i = 0; i < session.total_chunks; i++) {
-      await env.FILE_STORE.delete(`chunk:${uploadId}:${i}`);
-    }
-    await deleteChunkSession(env.DB, uploadId);
-
-    return c.json({ code, name: session.file_name, size: session.file_size });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
-
 // ===================== 下载 =====================
 
 app.get('/api/download/:code', async (c) => {
@@ -291,38 +194,16 @@ app.get('/api/download/:code', async (c) => {
   const headers: Record<string, string> = {
     'Content-Type': file.mime_type || 'application/octet-stream',
     'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
-    'Content-Length': String(file.size),
   };
 
-  // 分片文件 — 拼接后返回
-  if (file.chunk_count > 0) {
-    const parts: ArrayBuffer[] = [];
-    for (let i = 0; i < file.chunk_count; i++) {
-      const chunkObj = await env.FILE_STORE.get(`file:${code}:${i}`);
-      const chunkData = chunkObj ? await chunkObj.arrayBuffer() : null;
-      if (!chunkData) {
-        return c.html(errorPage('文件数据不完整', '请联系管理员'));
-      }
-      parts.push(chunkData);
-    }
-    const totalLen = parts.reduce((s, p) => s + p.byteLength, 0);
-    const assembled = new Uint8Array(totalLen);
-    let off = 0;
-    for (const p of parts) {
-      assembled.set(new Uint8Array(p), off);
-      off += p.byteLength;
-    }
-    return new Response(assembled.buffer, { headers });
-  }
-
-  // 单文件 — 直接返回
-  const fileObj = await env.FILE_STORE.get(`file:${code}`);
-  const fileData = fileObj ? await fileObj.arrayBuffer() : null;
-  if (!fileData) {
+  const obj = await env.FILE_STORE.get(`file:${code}`);
+  if (!obj) {
     return c.html(errorPage('文件不存在', '该文件可能已被清理'));
   }
 
-  return new Response(fileData, { headers });
+  // 直接从 R2 流式返回，不缓冲到内存
+  headers['Content-Length'] = String(obj.size);
+  return new Response(obj.body, { headers });
 });
 
 // ===================== 文件信息 API =====================
@@ -383,13 +264,7 @@ app.post('/api/admin/delete/:id', async (c) => {
   const id = parseInt(c.req.param('id'));
   const file = await deleteFileRecord(env.DB, id);
   if (file) {
-    if (file.chunk_count > 0) {
-      for (let i = 0; i < file.chunk_count; i++) {
-        await env.FILE_STORE.delete(`file:${file.code}:${i}`);
-      }
-    } else {
-      await env.FILE_STORE.delete(`file:${file.code}`);
-    }
+    await env.FILE_STORE.delete(`file:${file.code}`);
   }
   return c.redirect('/admin');
 });

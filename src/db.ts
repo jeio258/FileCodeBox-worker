@@ -1,4 +1,4 @@
-import type { FileRecord, ChunkSession } from './types';
+import type { FileRecord } from './types';
 
 /** 初始化数据库表（幂等，可多次调用） */
 export async function initDB(db: D1Database): Promise<void> {
@@ -21,22 +21,10 @@ export async function initDB(db: D1Database): Promise<void> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`,
-    `CREATE TABLE IF NOT EXISTS fc_chunks (
-      upload_id TEXT NOT NULL,
-      chunk_index INTEGER NOT NULL,
-      total_chunks INTEGER NOT NULL,
-      file_name TEXT NOT NULL,
-      file_size INTEGER NOT NULL,
-      chunk_size INTEGER NOT NULL,
-      mime_type TEXT DEFAULT 'application/octet-stream',
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (upload_id, chunk_index)
-    )`,
     "INSERT OR IGNORE INTO fc_settings(key, value) VALUES('admin_password', 'admin123')",
   ];
   const migrations = [
     'ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0',
-    'ALTER TABLE fc_files ADD COLUMN chunk_count INTEGER DEFAULT 0',
   ];
   for (const s of stmts) {
     try { await db.prepare(s).run(); } catch { /* ignore */ }
@@ -85,12 +73,11 @@ export async function insertFile(
     expireAt: string;
     maxDownloads: number;
     isText?: number;
-    chunkCount?: number;
   },
 ): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at, is_text, chunk_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at, is_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       file.code,
@@ -101,7 +88,6 @@ export async function insertFile(
       file.maxDownloads,
       new Date().toISOString(),
       file.isText ?? 0,
-      file.chunkCount ?? 0,
     )
     .run();
 }
@@ -165,91 +151,12 @@ export async function cleanupExpired(
     .all<FileRecord>();
   const files = expired.results ?? [];
   for (const f of files) {
-    if (f.chunk_count > 0) {
-      for (let i = 0; i < f.chunk_count; i++) {
-        await bucket.delete(`file:${f.code}:${i}`);
-      }
-    } else {
-      await bucket.delete(`file:${f.code}`);
-    }
+    await bucket.delete(`file:${f.code}`);
   }
   if (files.length > 0) {
     await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
   }
-  // 同时清理超过 1 天的废弃分片会话
-  await db.prepare("DELETE FROM fc_chunks WHERE created_at <= datetime('now', '-1 day')").run();
-  // 清理孤儿分片临时对象（上传中断遗留在 R2 中的 chunk:* 对象）
-  const cutoff = Date.now() - 24 * 3600 * 1000;
-  const chunkList = await bucket.list({ prefix: 'chunk:' });
-  for (const obj of chunkList.objects) {
-    if (obj.uploaded.getTime() < cutoff) {
-      await bucket.delete(obj.key);
-    }
-  }
   return files.length;
-}
-
-// ---- 分片上传 ----
-
-export async function initChunkSession(
-  db: D1Database,
-  params: {
-    fileName: string;
-    fileSize: number;
-    chunkSize: number;
-    mimeType: string;
-  },
-): Promise<string> {
-  const uploadId = crypto.randomUUID();
-  const totalChunks = Math.ceil(params.fileSize / params.chunkSize);
-  await db
-    .prepare(
-      'INSERT INTO fc_chunks(upload_id, chunk_index, total_chunks, file_name, file_size, chunk_size, mime_type, created_at) VALUES (?, -1, ?, ?, ?, ?, ?, ?)',
-    )
-    .bind(uploadId, totalChunks, params.fileName, params.fileSize, params.chunkSize, params.mimeType, new Date().toISOString())
-    .run();
-  return uploadId;
-}
-
-export async function getChunkSession(
-  db: D1Database,
-  uploadId: string,
-): Promise<ChunkSession | null> {
-  return db
-    .prepare('SELECT * FROM fc_chunks WHERE upload_id = ? AND chunk_index = -1')
-    .bind(uploadId)
-    .first<ChunkSession>();
-}
-
-export async function saveChunk(
-  db: D1Database,
-  session: ChunkSession,
-  index: number,
-): Promise<void> {
-  await db
-    .prepare(
-      'INSERT OR REPLACE INTO fc_chunks(upload_id, chunk_index, total_chunks, file_name, file_size, chunk_size, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .bind(session.upload_id, index, session.total_chunks, session.file_name, session.file_size, session.chunk_size, session.mime_type, new Date().toISOString())
-    .run();
-}
-
-export async function countUploadedChunks(
-  db: D1Database,
-  uploadId: string,
-): Promise<number> {
-  const row = await db
-    .prepare('SELECT COUNT(*) as count FROM fc_chunks WHERE upload_id = ? AND chunk_index >= 0')
-    .bind(uploadId)
-    .first<{ count: number }>();
-  return row?.count ?? 0;
-}
-
-export async function deleteChunkSession(
-  db: D1Database,
-  uploadId: string,
-): Promise<void> {
-  await db.prepare('DELETE FROM fc_chunks WHERE upload_id = ?').bind(uploadId).run();
 }
 
 // ---- 设置 ----

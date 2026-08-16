@@ -11,19 +11,6 @@ export interface FileRecord {
   created_at: string;
   ip: string;
   is_text: number;
-  chunk_count: number;
-}
-
-/** 分片上传会话 */
-export interface ChunkSession {
-  upload_id: string;
-  chunk_index: number;
-  total_chunks: number;
-  file_name: string;
-  file_size: number;
-  chunk_size: number;
-  mime_type: string;
-  created_at: string;
 }
 
 /** Cloudflare Worker 环境绑定 */

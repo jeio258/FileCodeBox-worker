@@ -2,8 +2,6 @@ import type { FileRecord } from '../types';
 import { formatFileSize } from '../utils';
 import { layout } from './layout';
 
-const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB per chunk
-
 // ---- 首页 ----
 
 export function homePage(): string {
@@ -31,15 +29,13 @@ export function homePage(): string {
 
     <!-- 文件上传面板 -->
     <div id="tab-file" class="tab-panel active">
-      <form id="uploadForm" action="/api/upload" method="post" enctype="multipart/form-data" onsubmit="handleUpload(event)">
+      <form id="uploadForm" onsubmit="handleUpload(event)">
         <div class="input-group"><label>选择文件</label><input type="file" name="file" id="fileInput" required class="input"></div>
         <div style="display:flex;gap:12px">
           <div class="input-group" style="flex:1"><label>最大下载次数</label><input type="number" name="max_downloads" value="-1" min="-1" class="input" placeholder="不限"></div>
           <div class="input-group" style="flex:1"><label>过期天数</label><input type="number" name="expire_days" min="1" max="365" value="7" class="input" placeholder="7"></div>
         </div>
         <div class="input-group"><label>自定义取件码 <span style="font-weight:400;color:var(--color-ink-2)">（可选，留空自动生成）</span></label><input type="text" name="code" class="input" placeholder="4 位数字取件码" maxlength="4" inputmode="numeric" pattern="[0-9]{0,4}"></div>
-        <div class="chunk-progress" id="chunkProgress"><div class="chunk-progress-bar" id="chunkProgressBar"></div></div>
-        <div class="chunk-status" id="chunkStatus"></div>
         <button type="submit" id="submitBtn" class="btn btn-primary">上传并获取取件码</button>
       </form>
     </div>
@@ -68,61 +64,39 @@ export function homePage(): string {
       var file = document.getElementById('fileInput').files[0];
       if (!file) return;
       var btn = document.getElementById('submitBtn');
-      var progressBar = document.getElementById('chunkProgressBar');
-      var progress = document.getElementById('chunkProgress');
-      var status = document.getElementById('chunkStatus');
-      var chunkSize = ${CHUNK_SIZE};
+      btn.disabled = true;
+      btn.textContent = '\u4e0a\u4f20\u4e2d\u2026';
 
-      if (file.size <= chunkSize) {
-        btn.disabled = true; btn.textContent = '\u4e0a\u4f20\u4e2d\u2026';
-        e.target.submit();
-        return;
-      }
+      var code = document.querySelector('[name="code"]').value || '';
+      var maxDownloads = document.querySelector('[name="max_downloads"]').value || '-1';
+      var expireDays = document.querySelector('[name="expire_days"]').value || '7';
 
-      btn.disabled = true; btn.textContent = '\u521d\u59cb\u5316\u2026';
-      progress.style.display = 'block'; status.style.display = 'block';
+      var url = '/api/upload?code=' + encodeURIComponent(code) +
+                '&max_downloads=' + encodeURIComponent(maxDownloads) +
+                '&expire_days=' + encodeURIComponent(expireDays);
 
       try {
-        var form = new FormData();
-        form.append('file_name', file.name);
-        form.append('file_size', file.size);
-        form.append('chunk_size', chunkSize);
-        form.append('mime_type', file.type || 'application/octet-stream');
-        var initResp = await fetch('/api/chunk/init', { method:'POST', body:form });
-        var initData = await initResp.json();
-        if (!initData.upload_id) throw new Error('Init failed');
-
-        var uploadId = initData.upload_id;
-        var totalChunks = Math.ceil(file.size / chunkSize);
-        btn.textContent = '\u4e0a\u4f20\u4e2d 0/' + totalChunks;
-
-        for (var i = 0; i < totalChunks; i++) {
-          var start = i * chunkSize;
-          var end = Math.min(start + chunkSize, file.size);
-          var blob = file.slice(start, end);
-          var chunkForm = new FormData();
-          chunkForm.append('chunk', blob, 'chunk');
-          await fetch('/api/chunk/upload/' + uploadId + '/' + i, { method:'POST', body:chunkForm });
-          var pct = Math.round((i + 1) / totalChunks * 100);
-          progressBar.style.width = pct + '%';
-          btn.textContent = '\u4e0a\u4f20\u4e2d ' + (i + 1) + '/' + totalChunks;
-        }
-
-        status.textContent = '\u5408\u5e76\u6587\u4ef6\u4e2d\u2026';
-        var completeForm = new FormData();
-        completeForm.append('max_downloads', document.querySelector('[name="max_downloads"]').value || '-1');
-        completeForm.append('expire_days', document.querySelector('[name="expire_days"]').value || '7');
-        completeForm.append('code', document.querySelector('[name="code"]').value || '');
-        var completeResp = await fetch('/api/chunk/complete/' + uploadId, { method:'POST', body:completeForm });
-        var completeData = await completeResp.json();
-        if (completeData.code) {
-          window.location.href = '/r/' + completeData.code;
+        // 原始字节流直传：body 直接是文件流，无 multipart 编码开销
+        var resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'X-Filename': encodeURIComponent(file.name),
+            'Content-Type': file.type || 'application/octet-stream',
+          },
+          body: file,
+        });
+        var data = await resp.json();
+        if (data.code) {
+          window.location.href = '/r/' + data.code;
         } else {
-          status.textContent = '\u9519\u8bef: ' + (completeData.error || 'unknown');
+          alert(data.error || '\u4e0a\u4f20\u5931\u8d25');
+          btn.disabled = false;
+          btn.textContent = '\u4e0a\u4f20\u5e76\u83b7\u53d6\u53d6\u4ef6\u7801';
         }
-      } catch(err) {
-        status.textContent = '\u4e0a\u4f20\u5931\u8d25: ' + err.message;
-        btn.disabled = false; btn.textContent = '\u4e0a\u4f20\u5e76\u83b7\u53d6\u53d6\u4ef6\u7801';
+      } catch (err) {
+        alert('\u4e0a\u4f20\u5931\u8d25: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = '\u4e0a\u4f20\u5e76\u83b7\u53d6\u53d6\u4ef6\u7801';
       }
     }
     </script>`;
