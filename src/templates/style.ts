@@ -80,9 +80,7 @@ export const STYLE = `
 body {
   font-family: var(--font-body);
   background-color: var(--color-paper);
-  background-image:
-    linear-gradient(color-mix(in oklab, var(--color-paper) 62%, transparent), color-mix(in oklab, var(--color-paper) 62%, transparent)),
-    url("https://t.alcy.cc/ycy");
+  background-image: url("https://t.alcy.cc/ycy");
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
