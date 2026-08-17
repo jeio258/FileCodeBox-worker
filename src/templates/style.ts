@@ -79,22 +79,18 @@ export const STYLE = `
 
 body {
   font-family: var(--font-body);
-  background: var(--color-paper);
+  background-color: var(--color-paper);
+  background-image:
+    linear-gradient(color-mix(in oklab, var(--color-paper) 62%, transparent), color-mix(in oklab, var(--color-paper) 62%, transparent)),
+    url("https://t.alcy.cc/ycy");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   color: var(--color-ink);
   min-height: 100vh;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background-image: url("https://t.alcy.cc/ycy");
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  z-index: -1;
 }
 
 .container {
@@ -104,14 +100,13 @@ body::before {
 }
 
 .card {
-  background: var(--color-paper-2);
+  background: color-mix(in oklab, var(--color-paper-2) 80%, transparent);
+  backdrop-filter: blur(16px) saturate(1.15);
+  -webkit-backdrop-filter: blur(16px) saturate(1.15);
   border-radius: var(--radius);
   padding: 28px 24px;
   border: 1px solid var(--color-rule);
   animation: cardIn var(--dur-long) var(--ease-out) both;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  background-color: color-mix(in srgb, var(--color-paper-2) 88%, transparent);
 }
 
 @keyframes cardIn {
