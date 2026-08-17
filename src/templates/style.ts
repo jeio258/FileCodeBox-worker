@@ -86,6 +86,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: url("https://t.alcy.cc/ycy");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  z-index: -1;
+}
+
 .container {
   max-width: 460px;
   margin: 0 auto;
@@ -98,6 +109,9 @@ body {
   padding: 28px 24px;
   border: 1px solid var(--color-rule);
   animation: cardIn var(--dur-long) var(--ease-out) both;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background-color: color-mix(in srgb, var(--color-paper-2) 88%, transparent);
 }
 
 @keyframes cardIn {
