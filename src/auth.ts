@@ -24,30 +24,20 @@ export async function adminAuth(c: Context<{ Bindings: Env }>, env: Env): Promis
 
 /**
  * 管理员登录处理。
- * 只做哈希比较（无明文回退）。
- * 首次运行时自动将 ADMIN_PASSWORD 环境变量哈希后存入 DB。
+ * 密码只存在 Cloudflare Secret（ADMIN_PASSWORD），不落盘、不写 DB。
  */
 export async function handleAdminLogin(
   c: Context<{ Bindings: Env }>,
   env: Env,
   inputPassword: string,
 ): Promise<{ success: true } | { success: false; error: string }> {
-  // 确保密码已存入 DB（首次运行或旧版明文残留时从 Secret 重新初始化）
-  let storedHash = await getSetting(env.DB, 'admin_password');
-  // 兼容旧版本：非 64 位 hex 的残留（如明文 'admin123'）视为无效，重新从 Secret 哈希
-  if (storedHash && !/^[a-f0-9]{64}$/.test(storedHash)) {
-    storedHash = null;
-  }
-  if (!storedHash) {
-    if (!env.ADMIN_PASSWORD) {
-      return { success: false, error: '未配置管理员密码，请运行 wrangler secret put ADMIN_PASSWORD 设置' };
-    }
-    storedHash = await hashPassword(env.ADMIN_PASSWORD);
-    await setSetting(env.DB, 'admin_password', storedHash);
+  if (!env.ADMIN_PASSWORD) {
+    return { success: false, error: '未配置管理员密码，请运行 wrangler secret put ADMIN_PASSWORD 设置' };
   }
 
   const inputHash = await hashPassword(inputPassword);
-  if (inputHash !== storedHash) {
+  const secretHash = await hashPassword(env.ADMIN_PASSWORD);
+  if (inputHash !== secretHash) {
     return { success: false, error: '密码错误' };
   }
 
