@@ -8,7 +8,6 @@
     "crons": ["*/30 * * * *"]
   },
   "vars": {
-    "ADMIN_PASSWORD": "admin123",
     "MAX_FILE_SIZE": "104857600",
     "DEFAULT_EXPIRE_DAYS": "7"
   },

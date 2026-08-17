@@ -21,7 +21,6 @@ export async function initDB(db: D1Database): Promise<void> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`,
-    "INSERT OR IGNORE INTO fc_settings(key, value) VALUES('admin_password', 'admin123')",
   ];
   const migrations = [
     'ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0',

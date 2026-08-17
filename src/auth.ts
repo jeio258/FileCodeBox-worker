@@ -32,10 +32,17 @@ export async function handleAdminLogin(
   env: Env,
   inputPassword: string,
 ): Promise<{ success: true } | { success: false; error: string }> {
-  // 确保密码已存入 DB（首次运行时从环境变量初始化）
+  // 确保密码已存入 DB（首次运行或旧版明文残留时从 Secret 重新初始化）
   let storedHash = await getSetting(env.DB, 'admin_password');
+  // 兼容旧版本：非 64 位 hex 的残留（如明文 'admin123'）视为无效，重新从 Secret 哈希
+  if (storedHash && !/^[a-f0-9]{64}$/.test(storedHash)) {
+    storedHash = null;
+  }
   if (!storedHash) {
-    storedHash = await hashPassword(env.ADMIN_PASSWORD || 'admin123');
+    if (!env.ADMIN_PASSWORD) {
+      return { success: false, error: '未配置管理员密码，请运行 wrangler secret put ADMIN_PASSWORD 设置' };
+    }
+    storedHash = await hashPassword(env.ADMIN_PASSWORD);
     await setSetting(env.DB, 'admin_password', storedHash);
   }
 
