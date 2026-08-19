@@ -19,6 +19,7 @@ import {
   cleanupExpired,
 } from './db';
 import { adminAuth, handleAdminLogin, handleAdminLogout } from './auth';
+import api from './api';
 import {
   homePage,
   retrievePage,
@@ -294,6 +295,9 @@ app.get('/api/init', async (c) => {
     return c.json({ error: e.message }, 500);
   }
 });
+
+// ===================== FileCodeBox 兼容 API =====================
+app.route('/', api);
 
 // ===================== 兜底 =====================
 

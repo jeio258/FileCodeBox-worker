@@ -30,7 +30,7 @@ export async function handleAdminLogin(
   c: Context<{ Bindings: Env }>,
   env: Env,
   inputPassword: string,
-): Promise<{ success: true } | { success: false; error: string }> {
+): Promise<{ success: true; token: string } | { success: false; error: string }> {
   if (!env.ADMIN_PASSWORD) {
     return { success: false, error: '未配置管理员密码，请运行 wrangler secret put ADMIN_PASSWORD 设置' };
   }
@@ -52,7 +52,7 @@ export async function handleAdminLogin(
     path: '/',
   });
 
-  return { success: true };
+  return { success: true, token };
 }
 
 /** 管理员登出 */

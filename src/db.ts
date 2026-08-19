@@ -139,6 +139,60 @@ export async function listFiles(
   return { files: rows.results ?? [], total: countRow?.count ?? 0 };
 }
 
+/** API 用：分页 + 关键词搜索 */
+export async function listFilesWithSearch(
+  db: D1Database,
+  page: number,
+  size: number,
+  keyword: string,
+): Promise<{ files: FileRecord[]; total: number }> {
+  const offset = (page - 1) * size;
+  const kw = keyword.trim();
+  const where = kw ? 'WHERE filename LIKE ?' : '';
+  const bindArgs: string[] = kw ? [`%${kw}%`] : [];
+  const [rows, countRow] = await Promise.all([
+    db
+      .prepare(`SELECT * FROM fc_files ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...bindArgs, size, offset)
+      .all<FileRecord>(),
+    db
+      .prepare(`SELECT COUNT(*) as count FROM fc_files ${where}`)
+      .bind(...bindArgs)
+      .first<{ count: number }>(),
+  ]);
+  return { files: rows.results ?? [], total: countRow?.count ?? 0 };
+}
+
+/** 仪表盘统计 */
+export async function getDashboardStats(db: D1Database): Promise<{
+  totalFiles: number;
+  totalSize: number;
+  todayCount: number;
+  todaySize: number;
+  yesterdayCount: number;
+  yesterdaySize: number;
+}> {
+  const [total, today, yesterday] = await Promise.all([
+    db
+      .prepare('SELECT COUNT(*) as count, COALESCE(SUM(size),0) as size FROM fc_files')
+      .first<{ count: number; size: number }>(),
+    db
+      .prepare("SELECT COUNT(*) as count, COALESCE(SUM(size),0) as size FROM fc_files WHERE date(created_at) = date('now')")
+      .first<{ count: number; size: number }>(),
+    db
+      .prepare("SELECT COUNT(*) as count, COALESCE(SUM(size),0) as size FROM fc_files WHERE date(created_at) = date('now', '-1 day')")
+      .first<{ count: number; size: number }>(),
+  ]);
+  return {
+    totalFiles: total?.count ?? 0,
+    totalSize: total?.size ?? 0,
+    todayCount: today?.count ?? 0,
+    todaySize: today?.size ?? 0,
+    yesterdayCount: yesterday?.count ?? 0,
+    yesterdaySize: yesterday?.size ?? 0,
+  };
+}
+
 // ---- 过期清理 ----
 
 export async function cleanupExpired(
