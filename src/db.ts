@@ -236,7 +236,7 @@ export async function setSetting(
     .run();
 }
 
-// ---- 登录速率限制（D1 存储，不用 KV） ----
+// ---- 登录速率限制（D1 存储） ----
 
 const LOGIN_RATE_WINDOW = 60_000; // 60 秒窗口
 const LOGIN_RATE_MAX = 5;          // 窗口内最大尝试次数

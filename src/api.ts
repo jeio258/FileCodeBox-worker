@@ -141,19 +141,19 @@ api.post('/share/text', uploadGate, shareText);
 const shareFile = async (c: Context<Bindings>) => {
   const env = c.env;
   try {
-    // parseBody 会全量缓冲到内存，先检查 Content-Length 防 OOM
-    const contentLength = parseInt(c.req.header('Content-Length') || '0');
-    const API_UPLOAD_LIMIT = 25 * 1024 * 1024; // API 表单上传限 25MB（大文件请用网页流式上传）
-    if (contentLength > API_UPLOAD_LIMIT) {
-      return fail(c, 400, `文件过大，API 上传限制 25MB，大文件请用网页上传`);
+    // 元数据走 query/header，文件字节流走 raw body，全程零缓冲（R2 直传，不限 25MB）
+    const customCode = (c.req.query('code') || '').trim();
+    const code = customCode || (await generateUniqueCode(env));
+    if (customCode && (await isCodeTaken(env.DB, code))) {
+      return fail(c, 409, '取件码已被占用');
     }
 
-    const body = await c.req.parseBody();
-    const file = body['file'] as File | undefined;
-    if (!file) return fail(c, 422, '缺少文件');
+    const expireValue = parseInt(c.req.query('expire_value') || '1');
+    const expireStyle = c.req.query('expire_style') || 'day';
+    const filename = decodeURIComponent(c.req.header('X-Filename') || '未命名');
+    const mimeType = c.req.header('Content-Type') || 'application/octet-stream';
+    const size = parseInt(c.req.header('Content-Length') || '0');
 
-    const expireValue = parseInt((body['expire_value'] as string) || '1');
-    const expireStyle = (body['expire_style'] as string) || 'day';
     const { expireAt, maxDownloads } = parseExpire(
       expireValue,
       expireStyle,
@@ -161,26 +161,25 @@ const shareFile = async (c: Context<Bindings>) => {
     );
 
     const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
-    if (file.size > maxSize) {
+    if (size > maxSize) {
       return fail(c, 400, `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB`);
     }
 
-    const code = await generateUniqueCode(env);
-
-    await env.FILE_STORE.put(`file:${code}`, file.stream(), {
-      httpMetadata: { contentType: file.type || 'application/octet-stream' },
-      customMetadata: { filename: file.name, size: String(file.size) },
+    // 原始字节流直接写入 R2，不经 parseBody 缓冲
+    await env.FILE_STORE.put(`file:${code}`, c.req.raw.body, {
+      httpMetadata: { contentType: mimeType },
+      customMetadata: { filename, size: String(size) },
     });
     await insertFile(env.DB, {
       code,
-      filename: file.name || '未命名',
-      size: file.size,
-      mimeType: file.type || 'application/octet-stream',
+      filename,
+      size,
+      mimeType,
       expireAt,
       maxDownloads,
     });
 
-    return ok(c, { code, name: file.name });
+    return ok(c, { code, name: filename });
   } catch (e: any) {
     console.error('shareFile error:', e);
     return fail(c, 500, '服务器内部错误');
