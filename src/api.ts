@@ -130,7 +130,8 @@ const shareText = async (c: Context<Bindings>) => {
 
     return ok(c, { code });
   } catch (e: any) {
-    return fail(c, 500, e.message);
+    console.error('shareText error:', e);
+    return fail(c, 500, '服务器内部错误');
   }
 };
 api.post('/share/text/', uploadGate, shareText);
@@ -140,6 +141,13 @@ api.post('/share/text', uploadGate, shareText);
 const shareFile = async (c: Context<Bindings>) => {
   const env = c.env;
   try {
+    // parseBody 会全量缓冲到内存，先检查 Content-Length 防 OOM
+    const contentLength = parseInt(c.req.header('Content-Length') || '0');
+    const API_UPLOAD_LIMIT = 25 * 1024 * 1024; // API 表单上传限 25MB（大文件请用网页流式上传）
+    if (contentLength > API_UPLOAD_LIMIT) {
+      return fail(c, 400, `文件过大，API 上传限制 25MB，大文件请用网页上传`);
+    }
+
     const body = await c.req.parseBody();
     const file = body['file'] as File | undefined;
     if (!file) return fail(c, 422, '缺少文件');
@@ -174,7 +182,8 @@ const shareFile = async (c: Context<Bindings>) => {
 
     return ok(c, { code, name: file.name });
   } catch (e: any) {
-    return fail(c, 500, e.message);
+    console.error('shareFile error:', e);
+    return fail(c, 500, '服务器内部错误');
   }
 };
 api.post('/share/file/', uploadGate, shareFile);

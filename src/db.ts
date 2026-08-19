@@ -235,3 +235,37 @@ export async function setSetting(
     .bind(key, value)
     .run();
 }
+
+// ---- 登录速率限制（D1 存储，不用 KV） ----
+
+const LOGIN_RATE_WINDOW = 60_000; // 60 秒窗口
+const LOGIN_RATE_MAX = 5;          // 窗口内最大尝试次数
+
+/**
+ * 检查并记录登录尝试。返回 true 表示允许继续，false 表示已限流。
+ */
+export async function checkLoginRateLimit(
+  db: D1Database,
+  ip: string,
+): Promise<boolean> {
+  const key = `login_ratelimit:${ip}`;
+  const now = Date.now();
+  const raw = await getSetting(db, key);
+
+  let count = 0;
+  let windowStart = now;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { count: number; windowStart: number };
+      if (now - parsed.windowStart < LOGIN_RATE_WINDOW) {
+        count = parsed.count;
+        windowStart = parsed.windowStart;
+      }
+    } catch { /* 损坏则重置 */ }
+  }
+
+  if (count >= LOGIN_RATE_MAX) return false;
+
+  await setSetting(db, key, JSON.stringify({ count: count + 1, windowStart }));
+  return true;
+}

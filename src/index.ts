@@ -116,7 +116,8 @@ app.post('/api/upload', async (c) => {
 
     return c.json({ code, filename, size });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    console.error('upload error:', e);
+    return c.json({ error: '服务器内部错误' }, 500);
   }
 });
 
@@ -162,7 +163,8 @@ app.post('/api/upload/text', async (c) => {
 
     return c.html(resultPage(code, title, textSize, getBaseUrl(c)));
   } catch (e: any) {
-    return c.html(errorPage('保存失败', e.message));
+    console.error('text upload error:', e);
+    return c.html(errorPage('保存失败', '服务器内部错误'));
   }
 });
 
@@ -278,13 +280,6 @@ app.post('/api/admin/cleanup', async (c) => {
   return c.redirect('/admin');
 });
 
-// ===================== Cron 定时清理 =====================
-
-app.get('/api/cron/cleanup', async (c) => {
-  const cleaned = await cleanupExpired(c.env.DB, c.env.FILE_STORE);
-  return c.json({ cleaned });
-});
-
 // ===================== 初始化 =====================
 
 app.get('/api/init', async (c) => {
@@ -292,7 +287,8 @@ app.get('/api/init', async (c) => {
     await initDB(c.env.DB);
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    console.error('init error:', e);
+    return c.json({ error: '服务器内部错误' }, 500);
   }
 });
 

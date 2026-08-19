@@ -2,7 +2,7 @@ import type { Context } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { Env } from './types';
 import { hashPassword } from './utils';
-import { getSetting, setSetting } from './db';
+import { getSetting, setSetting, checkLoginRateLimit } from './db';
 
 /**
  * 验证管理员是否已登录。
@@ -33,6 +33,16 @@ export async function handleAdminLogin(
 ): Promise<{ success: true; token: string } | { success: false; error: string }> {
   if (!env.ADMIN_PASSWORD) {
     return { success: false, error: '未配置管理员密码，请运行 wrangler secret put ADMIN_PASSWORD 设置' };
+  }
+
+  // 登录速率限制：60 秒内最多 5 次尝试（按客户端 IP）
+  const ip =
+    c.req.header('CF-Connecting-IP') ||
+    c.req.header('x-real-ip') ||
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+    'unknown';
+  if (!(await checkLoginRateLimit(env.DB, ip))) {
+    return { success: false, error: '尝试次数过多，请稍后再试' };
   }
 
   const inputHash = await hashPassword(inputPassword);
