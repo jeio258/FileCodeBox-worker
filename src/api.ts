@@ -33,6 +33,19 @@ function fail(c: Context<Bindings>, status: ContentfulStatusCode, msg: string) {
   return c.json({ code: status, msg }, status);
 }
 
+// ===================== 上传门控 =====================
+
+/**
+ * 游客上传开关（openUpload）。
+ * 默认 '1'（免登录游客可上传）；设为 '0' 时需 Bearer token 才能上传。
+ */
+async function uploadGate(c: Context<Bindings>, next: () => Promise<void>) {
+  const openUpload = (await getSetting(c.env.DB, 'open_upload')) ?? '1';
+  if (openUpload !== '0') return next();
+  if (await adminAuth(c, c.env)) return next();
+  return c.json({ code: 401, msg: '游客上传已关闭，请先登录' }, 401);
+}
+
 // ===================== 过期策略 =====================
 
 function parseExpire(
@@ -82,7 +95,7 @@ api.post('/admin/login', async (c) => {
 });
 
 // ---- 分享文本 ----
-api.post('/share/text/', async (c) => {
+const shareText = async (c: Context<Bindings>) => {
   const env = c.env;
   try {
     const body = await c.req.parseBody();
@@ -119,10 +132,12 @@ api.post('/share/text/', async (c) => {
   } catch (e: any) {
     return fail(c, 500, e.message);
   }
-});
+};
+api.post('/share/text/', uploadGate, shareText);
+api.post('/share/text', uploadGate, shareText);
 
 // ---- 分享文件 ----
-api.post('/share/file/', async (c) => {
+const shareFile = async (c: Context<Bindings>) => {
   const env = c.env;
   try {
     const body = await c.req.parseBody();
@@ -161,7 +176,9 @@ api.post('/share/file/', async (c) => {
   } catch (e: any) {
     return fail(c, 500, e.message);
   }
-});
+};
+api.post('/share/file/', uploadGate, shareFile);
+api.post('/share/file', uploadGate, shareFile);
 
 // ---- 获取/选择文件信息 ----
 async function selectFile(c: Context<Bindings>) {
@@ -188,6 +205,8 @@ async function selectFile(c: Context<Bindings>) {
 
 api.get('/share/select/', selectFile);
 api.post('/share/select/', selectFile);
+api.get('/share/select', selectFile);
+api.post('/share/select', selectFile);
 
 // ---- 下载 ----
 api.get('/share/download', async (c) => {
