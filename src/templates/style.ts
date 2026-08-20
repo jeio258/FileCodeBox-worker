@@ -508,7 +508,20 @@ textarea.input {
   font-size: 12px;
   color: var(--color-ink-2);
 }
-.footer a { color: var(--color-ink-2); }
+.footer a {
+  color: var(--color-ink-2);
+  text-decoration: none;
+}
+.footer a.github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  transition: color var(--dur-short) var(--ease-out);
+}
+.footer a.github-link:hover {
+  color: var(--color-ink);
+}
 
 /* ---- responsive ---- */
 @media (max-width: 420px) {
