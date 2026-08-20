@@ -20,6 +20,7 @@ import {
 } from './db';
 import { adminAuth, handleAdminLogin, handleAdminLogout } from './auth';
 import api from './api';
+import { STYLE } from './templates/style';
 import {
   homePage,
   retrievePage,
@@ -51,6 +52,15 @@ function getBaseUrl(c: Context<{ Bindings: Env }>): string {
 function expireAt(days: number): string {
   return new Date(Date.now() + days * 86400000).toISOString();
 }
+
+// ===================== 静态资源 =====================
+
+// 样式表独立成文件 + immutable 长缓存，避免每次页面内联 ~10KB CSS
+app.get('/static/style.css', (c) => {
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  c.header('Content-Type', 'text/css; charset=utf-8');
+  return c.body(STYLE);
+});
 
 // ===================== 页面路由 =====================
 
