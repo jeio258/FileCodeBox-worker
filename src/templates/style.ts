@@ -98,7 +98,7 @@ body {
 }
 
 .card {
-  background: color-mix(in oklab, var(--color-paper-2) 80%, transparent);
+  background: color-mix(in oklab, var(--color-paper-2) 50%, transparent);
   backdrop-filter: blur(16px) saturate(1.15);
   -webkit-backdrop-filter: blur(16px) saturate(1.15);
   border-radius: var(--radius);
