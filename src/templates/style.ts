@@ -114,7 +114,10 @@ body {
 
 /* ---- header ---- */
 .header {
-  text-align: left;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 28px;
   padding-top: 8px;
 }
@@ -132,14 +135,14 @@ body {
   margin-top: 4px;
 }
 
-/* ---- nav ---- */
-.nav {
+/* ---- header 操作按钮（卡片右上角，与标题同一水平） ---- */
+.header-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: 4px;
-  margin-bottom: 20px;
+  flex-shrink: 0;
 }
-.nav a {
+.header-actions a {
   font-family: var(--font-body);
   font-size: 13px;
   color: var(--color-ink-2);
@@ -147,8 +150,9 @@ body {
   padding: 6px 12px;
   border-radius: var(--radius);
   transition: background var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out);
+  white-space: nowrap;
 }
-.nav a:hover {
+.header-actions a:hover {
   background: var(--color-paper-3);
   color: var(--color-ink);
 }
@@ -516,7 +520,7 @@ textarea.input {
 
 @media (prefers-reduced-motion: reduce) {
   .card { animation: none; }
-  .btn, .nav a, .copy-text-btn, .input, .file-list-item, .btn-danger {
+  .btn, .header-actions a, .copy-text-btn, .input, .file-list-item, .btn-danger {
     transition: none;
   }
   .undo-toast { animation: none; }

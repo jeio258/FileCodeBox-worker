@@ -5,9 +5,16 @@ import { layout } from './layout';
 // ---- 首页 ----
 
 export function homePage(): string {
-  const nav = '<div class="nav"><a href="/admin">管理</a></div>';
   const content = `
-    <div class="header"><h1>FileCodeBox</h1><p>像取快递一样取文件</p></div>
+    <div class="header">
+      <div>
+        <h1>FileCodeBox</h1>
+        <p>像取快递一样取文件</p>
+      </div>
+      <div class="header-actions">
+        <a href="/admin">管理</a>
+      </div>
+    </div>
 
     <!-- 取件区 -->
     <form action="/r" method="get" style="margin-bottom:24px;padding-bottom:24px;border-bottom:1px solid var(--color-rule)">
@@ -130,15 +137,23 @@ export function homePage(): string {
       xhr.send(file);
     }
     </script>`;
-  return layout('FileCodeBox', content, nav);
+  return layout('FileCodeBox', content);
 }
 
 // ---- 取件页 ----
 
 export function retrievePage(code?: string): string {
-  const nav = '<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>';
   const content = `
-    <div class="header"><h1>取件</h1><p>输入取件码下载文件</p></div>
+    <div class="header">
+      <div>
+        <h1>取件</h1>
+        <p>输入取件码下载文件</p>
+      </div>
+      <div class="header-actions">
+        <a href="/">上传</a>
+        <a href="/admin">管理</a>
+      </div>
+    </div>
     <form action="/r" method="get">
       <div class="input-group"><label>取件码</label>
         <input type="text" name="code" value="${code ?? ''}" class="input" placeholder="输入 4 位数字取件码"
@@ -146,16 +161,23 @@ export function retrievePage(code?: string): string {
       </div>
       <button type="submit" class="btn btn-primary">取件</button>
     </form>`;
-  return layout('取件', content, nav);
+  return layout('取件', content);
 }
 
 // ---- 上传成功页 ----
 
 export function resultPage(code: string, filename: string, size: number, baseUrl: string): string {
   const shareUrl = `${baseUrl}/r/${code}`;
-  const nav = '<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>';
   const content = `
-    <div class="header"><h1>上传成功</h1></div>
+    <div class="header">
+      <div>
+        <h1>上传成功</h1>
+      </div>
+      <div class="header-actions">
+        <a href="/">上传</a>
+        <a href="/admin">管理</a>
+      </div>
+    </div>
     <div class="code-box">
       <div style="font-size:13px;color:var(--color-ink-2);margin-bottom:8px">取件码</div>
       <div class="code-display">${code}</div>
@@ -169,13 +191,12 @@ export function resultPage(code: string, filename: string, size: number, baseUrl
       </div>
     </div>
     <a href="/" class="btn btn-secondary" style="margin-top:12px">继续上传</a>`;
-  return layout('上传成功', content, nav);
+  return layout('上传成功', content);
 }
 
 // ---- 文件详情页 ----
 
 export function filePage(file: FileRecord, baseUrl: string): string {
-  const nav = '<div class="nav"><a href="/">上传</a><a href="/admin">管理</a></div>';
   const sizeStr = formatFileSize(file.size);
   const dlInfo = file.max_downloads < 0 ? '不限次数' : `已查看 ${file.download_count}/${file.max_downloads} 次`;
   const expireDate = new Date(file.expire_at);
@@ -189,7 +210,15 @@ export function filePage(file: FileRecord, baseUrl: string): string {
   // 文本内容 — 页面内展示
   if (file.is_text === 1 && !expired) {
     const content = `
-      <div class="header"><h1>取件</h1></div>
+      <div class="header">
+        <div>
+          <h1>取件</h1>
+        </div>
+        <div class="header-actions">
+          <a href="/">上传</a>
+          <a href="/admin">管理</a>
+        </div>
+      </div>
       <div style="text-align:center;padding:16px 0">
         <div style="font-size:20px;font-weight:600;margin-bottom:4px;word-break:break-all">${file.filename}</div>
         <div style="display:flex;justify-content:center;gap:24px;font-size:13px;color:var(--color-ink-2);margin-bottom:16px">
@@ -210,12 +239,20 @@ export function filePage(file: FileRecord, baseUrl: string): string {
           document.getElementById('textContent').textContent = t;
         });
       </script>`;
-    return layout('取件', content, nav);
+    return layout('取件', content);
   }
 
   // 文件下载页
   const content = `
-    <div class="header"><h1>取件</h1></div>
+    <div class="header">
+      <div>
+        <h1>取件</h1>
+      </div>
+      <div class="header-actions">
+        <a href="/">上传</a>
+        <a href="/admin">管理</a>
+      </div>
+    </div>
     ${expired ? '<div style="text-align:center;color:var(--color-danger);font-size:14px;margin-bottom:16px">此文件已过期</div>' : ''}
     <div style="text-align:center;padding:16px 0">
       <div class="file-icon">
@@ -239,7 +276,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
         </div>
       ` : ''}
     </div>`;
-  return layout('取件', content, nav);
+  return layout('取件', content);
 }
 
 // ---- 错误页 ----
@@ -274,8 +311,6 @@ export function adminPanel(
   page: number,
   error?: string,
 ): string {
-  const nav =
-    '<div class="nav"><a href="/">首页</a><a href="/api/admin/logout">退出</a></div>';
   const totalPages = Math.ceil(total / 50);
   const pagination =
     totalPages > 1
@@ -300,7 +335,16 @@ export function adminPanel(
     .join('');
 
   const content = `
-    <div class="header"><h1>管理面板</h1><p>共 ${total} 个文件</p></div>
+    <div class="header">
+      <div>
+        <h1>管理面板</h1>
+        <p>共 ${total} 个文件</p>
+      </div>
+      <div class="header-actions">
+        <a href="/">首页</a>
+        <a href="/api/admin/logout">退出</a>
+      </div>
+    </div>
     ${error ? `<div style="color:var(--color-danger);text-align:center;margin-bottom:14px;font-size:14px">${error}</div>` : ''}
     <div style="margin-bottom:14px">
       <form method="post" action="/api/admin/cleanup" style="display:inline" onsubmit="return confirm('\u786e\u8ba4\u6e05\u7406\u6240\u6709\u8fc7\u671f\u6587\u4ef6\uff1f')">
@@ -313,5 +357,5 @@ export function adminPanel(
       ${page > 1 ? `<a href="/admin?page=${page - 1}" style="font-size:13px;margin-right:10px;color:var(--color-accent);text-decoration:none">&larr; 上一页</a>` : ''}
       ${page < totalPages ? `<a href="/admin?page=${page + 1}" style="font-size:13px;color:var(--color-accent);text-decoration:none">下一页 &rarr;</a>` : ''}
     </div>`;
-  return layout('管理面板', content, nav);
+  return layout('管理面板', content);
 }

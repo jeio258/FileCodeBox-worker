@@ -3,7 +3,7 @@ import { STYLE } from './style';
 /**
  * 通用 HTML 布局包装器
  */
-export function layout(title: string, content: string, nav = '', showFooter = true): string {
+export function layout(title: string, content: string, showFooter = true): string {
   const footer = showFooter
     ? '<div class="footer"><a href="/">FileCodeBox</a> · 安全临时文件分享</div>'
     : '';
@@ -22,7 +22,6 @@ export function layout(title: string, content: string, nav = '', showFooter = tr
 </head>
 <body>
   <div class="container">
-    ${nav}
     <div class="card">${content}</div>
     ${footer}
   </div>
