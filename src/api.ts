@@ -189,13 +189,19 @@ api.post('/share/file/', uploadGate, shareFile);
 api.post('/share/file', uploadGate, shareFile);
 
 // ---- 获取/选择文件信息 ----
-async function selectFile(c: Context<Bindings>) {
+async function selectFile(c: Context<Bindings>, countAsDownload: boolean) {
   const env = c.env;
   const code = (c.req.query('code') || '').trim();
   if (!code) return fail(c, 422, '缺少取件码');
 
   const file = await getFileByCode(env.DB, code);
   if (!file) return fail(c, 404, '文件不存在或已过期');
+
+  // GET 按文档语义「直接下载文件」计入次数；POST 是选择/探查，不计
+  if (countAsDownload) {
+    const incremented = await incrementDownload(env.DB, code);
+    if (!incremented) return fail(c, 403, '已达最大下载次数');
+  }
 
   let text = '';
   if (file.is_text === 1) {
@@ -211,10 +217,10 @@ async function selectFile(c: Context<Bindings>) {
   });
 }
 
-api.get('/share/select/', selectFile);
-api.post('/share/select/', selectFile);
-api.get('/share/select', selectFile);
-api.post('/share/select', selectFile);
+api.get('/share/select/', (c) => selectFile(c, true));
+api.post('/share/select/', (c) => selectFile(c, false));
+api.get('/share/select', (c) => selectFile(c, true));
+api.post('/share/select', (c) => selectFile(c, false));
 
 // ---- 下载 ----
 api.get('/share/download', async (c) => {
@@ -225,13 +231,17 @@ api.get('/share/download', async (c) => {
   const file = await getFileByCode(env.DB, code);
   if (!file) return fail(c, 404, '文件不存在或已过期');
 
-  const incremented = await incrementDownload(env.DB, code);
-  if (!incremented) return fail(c, 403, '已达最大下载次数');
+  // HEAD 请求只是元数据探测（检查大小/存在性），不计入下载次数
+  const isHead = c.req.method === 'HEAD';
+  if (!isHead) {
+    const incremented = await incrementDownload(env.DB, code);
+    if (!incremented) return fail(c, 403, '已达最大下载次数');
+  }
 
   const obj = await env.FILE_STORE.get(`file:${code}`);
   if (!obj) return fail(c, 404, '文件数据缺失');
 
-  return new Response(obj.body, {
+  return new Response(isHead ? null : obj.body, {
     headers: {
       'Content-Type': file.mime_type || 'application/octet-stream',
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,

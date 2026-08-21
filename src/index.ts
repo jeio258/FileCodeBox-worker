@@ -183,7 +183,10 @@ app.get('/api/text/:code', async (c) => {
   const file = await getFileByCode(c.env.DB, code);
   if (!file || file.is_text !== 1) return c.text('Not found', 404);
 
-  await incrementDownload(c.env.DB, code);
+  // HEAD 请求是探测，不计入查看次数
+  if (c.req.method !== 'HEAD') {
+    await incrementDownload(c.env.DB, code);
+  }
   const textObj = await c.env.FILE_STORE.get(`file:${code}`);
   const text = textObj ? await textObj.text() : '';
   return c.text(text);
@@ -198,10 +201,13 @@ app.get('/api/download/:code', async (c) => {
   const file = await getFileByCode(env.DB, code);
   if (!file) return c.html(retrievePage(code));
 
-  // 原子检查 + 递增下载次数
-  const ok = await incrementDownload(env.DB, code);
-  if (!ok) {
-    return c.html(errorPage('已达最大下载次数', '该文件的下载次数已用完'));
+  // HEAD 请求只是元数据探测，不计入下载次数
+  const isHead = c.req.method === 'HEAD';
+  if (!isHead) {
+    const ok = await incrementDownload(env.DB, code);
+    if (!ok) {
+      return c.html(errorPage('已达最大下载次数', '该文件的下载次数已用完'));
+    }
   }
 
   const headers: Record<string, string> = {
@@ -216,7 +222,7 @@ app.get('/api/download/:code', async (c) => {
 
   // 直接从 R2 流式返回，不缓冲到内存
   headers['Content-Length'] = String(obj.size);
-  return new Response(obj.body, { headers });
+  return new Response(isHead ? null : obj.body, { headers });
 });
 
 // ===================== 文件信息 API =====================
