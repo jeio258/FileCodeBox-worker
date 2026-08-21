@@ -198,7 +198,7 @@ export function resultPage(code: string, filename: string, size: number, baseUrl
 
 export function filePage(file: FileRecord, baseUrl: string): string {
   const sizeStr = formatFileSize(file.size);
-  const dlInfo = file.max_downloads < 0 ? '不限次数' : `已查看 ${file.download_count}/${file.max_downloads} 次`;
+  const dlInfo = file.max_downloads < 0 ? `已下载 ${file.download_count} 次` : `已下载 ${file.download_count}/${file.max_downloads} 次`;
   const expireDate = new Date(file.expire_at);
   const expireStr =
     expireDate.getTime() - Date.now() > 365 * 86400000
