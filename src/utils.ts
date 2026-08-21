@@ -1,8 +1,15 @@
-/** 生成 4 位纯数字取件码 */
+/** 生成 4 位纯数字取件码（拒绝采样，无模偏差） */
 export function generateCode(): string {
-  const bytes = new Uint8Array(4);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => (b % 10).toString()).join('');
+  const bytes = new Uint8Array(1);
+  let code = '';
+  while (code.length < 4) {
+    crypto.getRandomValues(bytes);
+    // 拒绝 250-255，使每个数字等概率（250/10 = 25 个取值）
+    if (bytes[0] < 250) {
+      code += (bytes[0] % 10).toString();
+    }
+  }
+  return code;
 }
 
 /** 验证取件码格式：必须为 4 位数字 */
@@ -10,13 +17,14 @@ export function isValidCode(code: string): boolean {
   return /^\d{4}$/.test(code);
 }
 
-/** HTML 转义，防止 Stored XSS */
+/** HTML 转义，防止 Stored XSS（含单引号，用于 JS 字符串上下文） */
 export function escapeHtml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /** PBKDF2 哈希密码（固定盐 + 10 万次迭代，抗暴力破解） */

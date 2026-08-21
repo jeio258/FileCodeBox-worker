@@ -235,15 +235,15 @@ api.get('/share/download', async (c) => {
   const file = await getFileByCode(env.DB, code);
   if (!file) return fail(c, 404, '文件不存在或已过期');
 
+  const obj = await env.FILE_STORE.get(`file:${code}`);
+  if (!obj) return fail(c, 404, '文件数据缺失');
+
   // HEAD 请求只是元数据探测（检查大小/存在性），不计入下载次数
   const isHead = c.req.method === 'HEAD';
   if (!isHead) {
     const incremented = await incrementDownload(env.DB, code);
     if (!incremented) return fail(c, 403, '已达最大下载次数');
   }
-
-  const obj = await env.FILE_STORE.get(`file:${code}`);
-  if (!obj) return fail(c, 404, '文件数据缺失');
 
   return new Response(isHead ? null : obj.body, {
     headers: {

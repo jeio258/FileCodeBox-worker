@@ -221,6 +221,11 @@ app.get('/api/download/:code', async (c) => {
   const file = await getFileByCode(env.DB, code);
   if (!file) return c.html(retrievePage(code));
 
+  const obj = await env.FILE_STORE.get(`file:${code}`);
+  if (!obj) {
+    return c.html(errorPage('文件不存在', '该文件可能已被清理'));
+  }
+
   // HEAD 请求只是元数据探测，不计入下载次数
   const isHead = c.req.method === 'HEAD';
   if (!isHead) {
@@ -230,18 +235,12 @@ app.get('/api/download/:code', async (c) => {
     }
   }
 
+  // 直接从 R2 流式返回，不缓冲到内存
   const headers: Record<string, string> = {
     'Content-Type': file.mime_type || 'application/octet-stream',
     'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+    'Content-Length': String(obj.size),
   };
-
-  const obj = await env.FILE_STORE.get(`file:${code}`);
-  if (!obj) {
-    return c.html(errorPage('文件不存在', '该文件可能已被清理'));
-  }
-
-  // 直接从 R2 流式返回，不缓冲到内存
-  headers['Content-Length'] = String(obj.size);
   return new Response(isHead ? null : obj.body, { headers });
 });
 
@@ -249,7 +248,10 @@ app.get('/api/download/:code', async (c) => {
 
 app.get('/api/info/:code', async (c) => {
   const code = c.req.param('code').trim();
-  const file = await c.env.DB.prepare('SELECT * FROM fc_files WHERE code = ?').bind(code).first<FileRecord>();
+  const file = await c.env.DB
+    .prepare("SELECT * FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
+    .bind(code)
+    .first<FileRecord>();
   if (!file) return c.json({ error: 'not found' }, 404);
   return c.json({
     filename: file.filename,
@@ -303,11 +305,8 @@ app.post('/api/admin/delete/:id', async (c) => {
   const id = parseInt(c.req.param('id'));
   const file = await deleteFileRecord(env.DB, id);
   if (file) {
-    // 并发删除 DB 记录与 R2 对象，避免孤儿对象；R2 删除失败不阻断流程
-    await Promise.all([
-      env.FILE_STORE.delete(`file:${file.code}`),
-      // DB 删除已在 deleteFileRecord 内部完成
-    ]);
+    // 删除 R2 对象（DB 删除已在 deleteFileRecord 内部完成）
+    await env.FILE_STORE.delete(`file:${file.code}`);
   }
   return c.redirect('/admin');
 });
