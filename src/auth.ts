@@ -5,8 +5,25 @@ import { hashPassword } from './utils';
 import { getSetting, setSetting, checkLoginRateLimit } from './db';
 
 /**
+ * 常数时间字符串比较，防止时序攻击。
+ * 注意：crypto.subtle.timingSafeEqual 在 workers-types 中尚未声明，此处手动实现。
+ */
+function timingSafeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  const encoder = new TextEncoder();
+  const ab = encoder.encode(a);
+  const bb = encoder.encode(b);
+  let result = 0;
+  for (let i = 0; i < ab.length; i++) {
+    result |= ab[i] ^ bb[i];
+  }
+  return result === 0;
+}
+
+/**
  * 验证管理员是否已登录。
  * 返回 true 表示已认证，false 需要登录。
+ * 使用常数时间比较防止时序攻击。
  */
 export async function adminAuth(c: Context<{ Bindings: Env }>, env: Env): Promise<boolean> {
   const token =
@@ -16,7 +33,7 @@ export async function adminAuth(c: Context<{ Bindings: Env }>, env: Env): Promis
 
   try {
     const stored = await getSetting(env.DB, 'admin_token');
-    return stored === token;
+    return timingSafeCompare(token, stored ?? '');
   } catch {
     return false;
   }

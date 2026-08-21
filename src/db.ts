@@ -203,12 +203,12 @@ export async function cleanupExpired(
     .prepare("SELECT * FROM fc_files WHERE datetime(expire_at) <= datetime('now')")
     .all<FileRecord>();
   const files = expired.results ?? [];
-  for (const f of files) {
-    await bucket.delete(`file:${f.code}`);
-  }
-  if (files.length > 0) {
-    await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
-  }
+  if (files.length === 0) return 0;
+
+  // 并发删除 R2 对象，避免串行等待
+  await Promise.all(files.map((f) => bucket.delete(`file:${f.code}`)));
+
+  await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
   return files.length;
 }
 
@@ -243,6 +243,8 @@ const LOGIN_RATE_MAX = 5;          // 窗口内最大尝试次数
 
 /**
  * 检查并记录登录尝试。返回 true 表示允许继续，false 表示已限流。
+ * 关键：无论是否通过，只要窗口未过期都会递增计数并刷新时间戳，
+ *       防止攻击者在窗口重置后获得额外尝试次数。
  */
 export async function checkLoginRateLimit(
   db: D1Database,
@@ -264,8 +266,9 @@ export async function checkLoginRateLimit(
     } catch { /* 损坏则重置 */ }
   }
 
-  if (count >= LOGIN_RATE_MAX) return false;
+  // 始终写入（含超限情况），防止窗口被绕过
+  const newCount = count + 1;
+  await setSetting(db, key, JSON.stringify({ count: newCount, windowStart }));
 
-  await setSetting(db, key, JSON.stringify({ count: count + 1, windowStart }));
-  return true;
+  return newCount <= LOGIN_RATE_MAX;
 }

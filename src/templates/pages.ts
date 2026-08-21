@@ -1,5 +1,5 @@
 import type { FileRecord } from '../types';
-import { formatFileSize } from '../utils';
+import { formatFileSize, escapeHtml } from '../utils';
 import { layout } from './layout';
 
 // ---- 首页 ----
@@ -181,13 +181,13 @@ export function resultPage(code: string, filename: string, size: number, baseUrl
     <div class="code-box">
       <div style="font-size:13px;color:var(--color-ink-2);margin-bottom:8px">取件码</div>
       <div class="code-display">${code}</div>
-      <button class="copy-text-btn" onclick="var t=this;navigator.clipboard.writeText('${code}').then(function(){t.textContent='\u5df2\u590d\u5236'});setTimeout(function(){t.textContent='\u590d\u5236\u53d6\u4ef6\u7801'},2000)">复制取件码</button>
+      <button class="copy-text-btn" onclick="var t=this;navigator.clipboard.writeText('${escapeHtml(code)}').then(function(){t.textContent='\u5df2\u590d\u5236'});setTimeout(function(){t.textContent='\u590d\u5236\u53d6\u4ef6\u7801'},2000)">复制取件码</button>
       <div class="info-row" style="margin-top:16px">
-        <span class="info-tag">${filename}</span>
+        <span class="info-tag">${escapeHtml(filename)}</span>
         <span class="info-tag">${formatFileSize(size)}</span>
       </div>
       <div style="margin-top:16px">
-        <button class="copy-text-btn" onclick="var t=this;navigator.clipboard.writeText('${shareUrl}').then(function(){t.textContent='\u94fe\u63a5\u5df2\u590d\u5236'});setTimeout(function(){t.textContent='\u590d\u5236\u5206\u4eab\u94fe\u63a5'},2000)">复制分享链接</button>
+        <button class="copy-text-btn" onclick="var t=this;navigator.clipboard.writeText('${escapeHtml(shareUrl)}').then(function(){t.textContent='\u94fe\u63a5\u5df2\u590d\u5236'});setTimeout(function(){t.textContent='\u590d\u5236\u5206\u4eab\u94fe\u63a5'},2000)">复制分享链接</button>
       </div>
     </div>
     <a href="/" class="btn btn-secondary" style="margin-top:12px">继续上传</a>`;
@@ -220,7 +220,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
         </div>
       </div>
       <div style="text-align:center;padding:16px 0">
-        <div style="font-size:20px;font-weight:600;margin-bottom:4px;word-break:break-all">${file.filename}</div>
+        <div style="font-size:20px;font-weight:600;margin-bottom:4px;word-break:break-all">${escapeHtml(file.filename)}</div>
         <div style="display:flex;justify-content:center;gap:24px;font-size:13px;color:var(--color-ink-2);margin-bottom:16px">
           <span>${sizeStr}</span>
           <span>${dlInfo}</span>
@@ -228,10 +228,10 @@ export function filePage(file: FileRecord, baseUrl: string): string {
         </div>
         <div class="text-content" id="textContent">加载中…</div>
         <div style="margin-top:12px;font-size:13px;color:var(--color-ink-2)">
-          取件码: <strong style="font-size:18px;color:var(--color-accent);letter-spacing:3px;font-family:var(--font-mono)">${file.code}</strong>
+          取件码: <strong style="font-size:18px;color:var(--color-accent);letter-spacing:3px;font-family:var(--font-mono)">${escapeHtml(file.code)}</strong>
         </div>
         <div style="margin-top:8px">
-          <button onclick="navigator.clipboard.writeText('${shareUrl}')" class="btn btn-secondary" style="width:auto;display:inline-flex;padding:8px 16px;font-size:13px">复制分享链接</button>
+          <button onclick="navigator.clipboard.writeText('${escapeHtml(shareUrl)}')" class="btn btn-secondary" style="width:auto;display:inline-flex;padding:8px 16px;font-size:13px">复制分享链接</button>
         </div>
       </div>
       <script>
@@ -260,7 +260,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
         </svg>
       </div>
-      <div style="font-size:18px;font-weight:500;margin-bottom:6px;word-break:break-all">${file.filename}</div>
+      <div style="font-size:18px;font-weight:500;margin-bottom:6px;word-break:break-all">${escapeHtml(file.filename)}</div>
       <div style="display:flex;justify-content:center;gap:20px;font-size:13px;color:var(--color-ink-2);margin-bottom:6px">
         <span>${sizeStr}</span>
         <span>${dlInfo}</span>
@@ -269,10 +269,10 @@ export function filePage(file: FileRecord, baseUrl: string): string {
       ${!expired ? `
         <a href="/api/download/${file.code}" class="btn btn-primary" style="width:auto;padding:12px 40px;display:inline-flex">下载文件</a>
         <div style="margin-top:12px;font-size:13px;color:var(--color-ink-2)">
-          取件码 <strong style="font-size:18px;color:var(--color-accent);letter-spacing:3px;font-family:var(--font-mono)">${file.code}</strong>
+          取件码 <strong style="font-size:18px;color:var(--color-accent);letter-spacing:3px;font-family:var(--font-mono)">${escapeHtml(file.code)}</strong>
         </div>
         <div style="margin-top:8px">
-          <button onclick="navigator.clipboard.writeText('${shareUrl}')" class="btn btn-secondary" style="width:auto;display:inline-flex;padding:8px 16px;font-size:13px">复制分享链接</button>
+          <button onclick="navigator.clipboard.writeText('${escapeHtml(shareUrl)}')" class="btn btn-secondary" style="width:auto;display:inline-flex;padding:8px 16px;font-size:13px">复制分享链接</button>
         </div>
       ` : ''}
     </div>`;
@@ -322,8 +322,8 @@ export function adminPanel(
       const expired = new Date(f.expire_at).getTime() < Date.now();
       const size = formatFileSize(f.size);
       return `<div class="file-list-item ${expired ? 'expired' : ''}">
-        <span class="fname">${f.filename}</span>
-        <span class="fmeta">${f.code}</span>
+        <span class="fname">${escapeHtml(f.filename)}</span>
+        <span class="fmeta">${escapeHtml(f.code)}</span>
         <span class="fmeta">${size}</span>
         <span class="fmeta">${f.download_count}次</span>
         <span class="fmeta">${f.expire_at.slice(0, 10)}</span>

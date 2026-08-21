@@ -7,7 +7,7 @@ import { cors } from 'hono/cors';
 import type { Context } from 'hono';
 
 import type { Env, FileRecord } from './types';
-import { generateCode } from './utils';
+import { generateCode, isValidCode, escapeHtml } from './utils';
 import {
   initDB,
   getFileByCode,
@@ -39,6 +39,17 @@ app.use('*', cors());
 app.use('*', async (c, next) => {
   await next();
   c.res.headers.set('Referrer-Policy', 'no-referrer');
+  // Content-Security-Policy：限制资源加载来源，降低 XSS 影响面
+  c.res.headers.set(
+    'Content-Security-Policy',
+    "default-src 'self'; " +
+      "script-src 'self' 'unsafe-inline'; " +
+      "style-src 'self' 'unsafe-inline' fonts.googleapis.com; " +
+      "img-src 'self' https://t.alcy.cc https://q1.qlogo.cn https: data:; " +
+      "font-src fonts.gstatic.com; " +
+      "object-src 'none'; " +
+      "frame-ancestors 'none';",
+  );
 });
 
 // ===================== 助手函数 =====================
@@ -93,7 +104,12 @@ app.post('/api/upload', async (c) => {
   const env = c.env;
   try {
     // 元数据走 query/header，文件字节流走 raw body，全程零缓冲
-    const code = (c.req.query('code') || '').trim() || generateCode();
+    const rawCode = (c.req.query('code') || '').trim();
+    const code = rawCode || generateCode();
+    // 服务端校验取件码格式：自定义码必须为 4 位数字
+    if (rawCode && !isValidCode(rawCode)) {
+      return c.json({ error: '取件码必须为 4 位数字' }, 400);
+    }
     const maxDownloads = parseInt(c.req.query('max_downloads') || '-1');
     const expireDays = parseInt(c.req.query('expire_days') || env.DEFAULT_EXPIRE_DAYS || '7');
     const filename = decodeURIComponent(c.req.header('X-Filename') || '未命名');
@@ -137,7 +153,7 @@ app.post('/api/upload/text', async (c) => {
   const env = c.env;
   try {
     const body = await c.req.parseBody();
-    const text = (body['text'] as string || '').trim();
+    const text = ((body['text'] as string) || '').trim();
     if (!text) return c.html(errorPage('内容为空', '请输入要分享的文本内容'));
 
     const textSize = new TextEncoder().encode(text).length;
@@ -146,9 +162,13 @@ app.post('/api/upload/text', async (c) => {
       return c.html(errorPage('文本过长', '最大支持 512KB'));
     }
 
-    const code = ((body['code'] as string) || '').trim() || generateCode();
-    const maxDownloads = parseInt(body['max_downloads'] as string || '-1');
-    const expireDays = parseInt(body['expire_days'] as string || env.DEFAULT_EXPIRE_DAYS || '7');
+    const rawCode = ((body['code'] as string) || '').trim();
+    const code = rawCode || generateCode();
+    if (rawCode && !isValidCode(rawCode)) {
+      return c.html(errorPage('取件码格式错误', '取件码必须为 4 位数字'));
+    }
+    const maxDownloads = parseInt((body['max_downloads'] as string) || '-1');
+    const expireDays = parseInt((body['expire_days'] as string) || env.DEFAULT_EXPIRE_DAYS || '7');
 
     if (await isCodeTaken(env.DB, code)) {
       return c.html(errorPage('取件码已被占用', '请换一个取件码重试'));
@@ -283,7 +303,11 @@ app.post('/api/admin/delete/:id', async (c) => {
   const id = parseInt(c.req.param('id'));
   const file = await deleteFileRecord(env.DB, id);
   if (file) {
-    await env.FILE_STORE.delete(`file:${file.code}`);
+    // 并发删除 DB 记录与 R2 对象，避免孤儿对象；R2 删除失败不阻断流程
+    await Promise.all([
+      env.FILE_STORE.delete(`file:${file.code}`),
+      // DB 删除已在 deleteFileRecord 内部完成
+    ]);
   }
   return c.redirect('/admin');
 });

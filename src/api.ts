@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from './types';
-import { generateCode, formatFileSize } from './utils';
+import { generateCode, formatFileSize, isValidCode } from './utils';
 import {
   getFileByCode,
   insertFile,
@@ -143,6 +143,10 @@ const shareFile = async (c: Context<Bindings>) => {
   try {
     // 元数据走 query/header，文件字节流走 raw body，全程零缓冲（R2 直传，不限 25MB）
     const customCode = (c.req.query('code') || '').trim();
+    // 服务端校验自定义取件码格式
+    if (customCode && !isValidCode(customCode)) {
+      return fail(c, 400, '取件码必须为 4 位数字');
+    }
     const code = customCode || (await generateUniqueCode(env));
     if (customCode && (await isCodeTaken(env.DB, code))) {
       return fail(c, 409, '取件码已被占用');
