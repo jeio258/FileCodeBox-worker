@@ -64,23 +64,57 @@ function expireAt(days: number): string {
   return new Date(Date.now() + days * 86400000).toISOString();
 }
 
+// ===================== 缓存助手 =====================
+
+/**
+ * Cache API 缓存 GET 响应（Workers 响应默认不被 CDN 缓存，需显式 put）
+ * 带查询参数（如 ?t=）的请求直接回源，不写入缓存
+ */
+async function cached(
+  c: Context<{ Bindings: Env }>,
+  makeResponse: () => Response | Promise<Response>,
+  ttlSeconds: number,
+): Promise<Response> {
+  if (c.req.method !== 'GET' || c.req.url.includes('?')) {
+    return makeResponse();
+  }
+  const cache = await caches.open('default');
+  const cacheKey = new Request(c.req.url);
+  const cachedRes = await cache.match(cacheKey);
+  if (cachedRes) return cachedRes;
+
+  const res = await makeResponse();
+  res.headers.set('Cache-Control', `public, max-age=${ttlSeconds}`);
+  c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
+  return res;
+}
+
 // ===================== 静态资源 =====================
 
 // 样式表独立成文件 + immutable 长缓存，避免每次页面内联 ~10KB CSS
-app.get('/static/style.css', (c) => {
-  c.header('Cache-Control', 'public, max-age=31536000, immutable');
-  c.header('Content-Type', 'text/css; charset=utf-8');
-  return c.body(STYLE);
-});
+app.get('/static/style.css', (c) =>
+  cached(c, () => {
+    const res = new Response(STYLE, { headers: { 'Content-Type': 'text/css; charset=utf-8' } });
+    res.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    return res;
+  }, 31536000),
+);
+
+// 背景图本地提供：固定 URL + 长缓存，替代外部随机图源（每次 301 跳转 + 1.2MB 8K 图）
+app.get('/static/bg.webp', (c) =>
+  cached(c, async () => {
+    const obj = await c.env.FILE_STORE.get('bg.webp');
+    if (!obj) return new Response('Not Found', { status: 404 });
+    const res = new Response(obj.body, { headers: { 'Content-Type': 'image/webp' } });
+    res.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    return res;
+  }, 31536000),
+);
 
 // ===================== 页面路由 =====================
 
-// 首页
-// 首页（静态，可缓存）
-app.get('/', (c) => {
-  c.header('Cache-Control', 'public, max-age=300');
-  return c.html(homePage());
-});
+// 首页（纯静态，可缓存）
+app.get('/', (c) => cached(c, () => c.html(homePage()), 300));
 
 // 取件页（静态，可缓存）
 app.get('/r', (c) => {

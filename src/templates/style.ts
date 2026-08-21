@@ -80,7 +80,7 @@ export const STYLE = `
 body {
   font-family: var(--font-body);
   background-color: var(--color-paper);
-  background-image: url("https://t.alcy.cc/ycy");
+  background-image: url("/static/bg.webp");
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
