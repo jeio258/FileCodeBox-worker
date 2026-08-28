@@ -18,13 +18,9 @@ export function layout(title: string, content: string, showFooter = true): strin
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${title}</title>
   <link rel="icon" href="https://q1.qlogo.cn/g?b=qq&nk=2847495839&s=640">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://t.alcy.cc">
   <link rel="preload" as="image" href="https://t.alcy.cc/ycy" fetchpriority="high">
-  <link rel="stylesheet" href="/static/style.css?v=2">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&family=JetBrains+Mono:wght@400;500&family=LXGW+Wenkai&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&family=JetBrains+Mono:wght@400;500&family=LXGW+Wenkai&display=swap" rel="stylesheet"></noscript>
+  <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
   <div class="container">
