@@ -60,16 +60,15 @@ export async function getFileById(
 }
 
 export async function isCodeTaken(db: D1Database, code: string): Promise<boolean> {
-  // 先查历史使用记录（含已过期/已删除），防止重复占用
-  const history = await db
-    .prepare('SELECT code FROM fc_used_codes WHERE code = ?')
-    .bind(code)
-    .first();
-  if (history) return true;
-  // 再查活跃文件
+  // 单次查询：合并历史记录和活跃文件检查
   const row = await db
-    .prepare("SELECT id FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
-    .bind(code)
+    .prepare(`
+      SELECT 1 FROM fc_used_codes WHERE code = ?
+      UNION ALL
+      SELECT 1 FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')
+      LIMIT 1
+    `)
+    .bind(code, code)
     .first();
   return row !== null;
 }
