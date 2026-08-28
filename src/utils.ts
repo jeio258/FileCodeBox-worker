@@ -55,3 +55,13 @@ export function formatFileSize(bytes: number): string {
   if (bytes > 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
 }
+
+/** 从请求头提取客户端真实 IP（优先 CF-Connecting-IP，回退 x-real-ip / x-forwarded-for） */
+export function getClientIp(headers: Headers): string {
+  return (
+    headers.get('cf-connecting-ip') ??
+    headers.get('x-real-ip') ??
+    headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+    ''
+  );
+}

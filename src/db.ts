@@ -31,6 +31,13 @@ export async function initDB(db: D1Database): Promise<void> {
   for (const m of migrations) {
     try { await db.prepare(m).run(); } catch { /* column already exists — ok */ }
   }
+
+  // 取件码使用记录表：记录所有曾经使用过的取件码（含已过期/已删除），防止重复占用
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS fc_used_codes (
+      code TEXT PRIMARY KEY
+    )`).run();
+  } catch { /* ignore */ }
 }
 
 // ---- 文件查询 ----
@@ -53,11 +60,31 @@ export async function getFileById(
 }
 
 export async function isCodeTaken(db: D1Database, code: string): Promise<boolean> {
+  // 先查历史使用记录（含已过期/已删除），防止重复占用
+  const history = await db
+    .prepare('SELECT code FROM fc_used_codes WHERE code = ?')
+    .bind(code)
+    .first();
+  if (history) return true;
+  // 再查活跃文件
   const row = await db
     .prepare("SELECT id FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
     .bind(code)
     .first();
   return row !== null;
+}
+
+/** 记录取件码为已使用（调用前确保 code 格式正确） */
+export async function markCodeUsed(db: D1Database, code: string): Promise<void> {
+  await db
+    .prepare('INSERT OR IGNORE INTO fc_used_codes(code) VALUES (?)')
+    .bind(code)
+    .run();
+}
+
+/** 释放取件码（删除/过期后允许复用） */
+export async function releaseCode(db: D1Database, code: string): Promise<void> {
+  await db.prepare('DELETE FROM fc_used_codes WHERE code = ?').bind(code).run();
 }
 
 // ---- 插入 ----
@@ -72,11 +99,12 @@ export async function insertFile(
     expireAt: string;
     maxDownloads: number;
     isText?: number;
+    clientIp?: string;
   },
 ): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at, is_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at, ip, is_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       file.code,
@@ -86,6 +114,7 @@ export async function insertFile(
       file.expireAt,
       file.maxDownloads,
       new Date().toISOString(),
+      file.clientIp ?? '',
       file.isText ?? 0,
     )
     .run();
@@ -116,6 +145,8 @@ export async function deleteFileRecord(
   const file = await getFileById(db, id);
   if (file) {
     await db.prepare('DELETE FROM fc_files WHERE id = ?').bind(id).run();
+    // 释放取件码，允许复用
+    await releaseCode(db, file.code);
   }
   return file;
 }
@@ -208,7 +239,9 @@ export async function cleanupExpired(
   // 并发删除 R2 对象，避免串行等待
   await Promise.all(files.map((f) => bucket.delete(`file:${f.code}`)));
 
+  // 先删记录，再释放取件码（并行执行，释放顺序不影响结果）
   await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
+  await Promise.all(files.map((f) => releaseCode(db, f.code)));
   return files.length;
 }
 

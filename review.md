@@ -409,7 +409,7 @@ if (file) {
 
 ## 九、修复状态（2026-08-22 已修复）
 
-| # | 问题 | 修复方式 | 改动文件 |
+| # | 问题 | 修复方式 | 改动文件 |  
 |---|------|----------|----------|
 | 1 | Stored XSS | 新增 `escapeHtml()`，所有模板中的 filename/code/shareUrl 插值均已转义 | utils.ts, pages.ts |
 | 2 | 时序攻击 | 新增 `timingSafeCompare()` 常数时间比较替代 === | auth.ts |
@@ -421,3 +421,83 @@ if (file) {
 | 8 | Math.random() 取件码 | 改为 crypto.getRandomValues() CSPRNG | utils.ts |
 
 **Diff 统计：** 6 个文件，+95 / -35 行
+
+---
+
+## 十、后续重构（2026-08-28）
+
+### 10.1 消除重复逻辑 — 提取 shared.ts
+
+将 `index.ts` 和 `api.ts` 中重复的上传/下载/文本分享业务逻辑统一收敛到 `src/shared.ts`：
+
+| 函数 | 职责 | 被调用方 |
+|------|------|----------|
+| `uploadFile()` | 文件上传核心逻辑（校验码→存R2→写D1→记录used） | index.ts `/api/upload`、api.ts `/share/file` |
+| `uploadText()` | 文本上传核心逻辑 | index.ts `/api/upload/text`、api.ts `/share/text` |
+| `downloadFile()` | 文件下载核心逻辑（查D1→流R2→计数） | index.ts `/api/download/:code`、api.ts `/share/download` |
+| `selectFile()` | 文件信息获取（含文本内容） | api.ts `/share/select` |
+| `parseExpire()` | 过期策略解析 | shared.ts 内部 |
+
+**改动文件：**
+- `src/shared.ts` — 新建，承载全部共享业务逻辑
+- `src/index.ts` — 删除内联上传/下载逻辑，改为调用 shared 函数（-160 行）
+- `src/api.ts` — 删除内联逻辑与动态 import，改为直接导入 shared（-208 → +90 行，净减少 118 行）
+
+### 10.2 修复取件码重复占用问题（取件码复用）
+
+**需求：** 已删除或已过期的文件，其取件码应释放并允许重新投入使用，避免有限取件码空间被永久占用。
+
+**修复方案：** 在文件删除（手动/过期清理）时调用 `releaseCode()`，从 `fc_used_codes` 中移除该码。
+
+- `releaseCode()`：`DELETE FROM fc_used_codes WHERE code = ?` 释放单个码
+- `deleteFileRecord()`：DB 删除成功后调用 `releaseCode(file.code)`
+- `cleanupExpired()`：遍历所有过期文件，并发调用 `releaseCode()` 释放所有过期码
+
+**语义变化：** 取件码从"永久占用"变为"占用至文件删除/过期后释放"，4 位码空间得以循环复用。
+
+---
+
+### 10.3 综合代码审查修复（2026-08-28）
+
+| # | 问题 | 修复方式 |
+|---|------|----------|
+| H1 | `uploadFile` 中 `max_downloads` 参数被忽略 | 读取用户值后，若 `>= 0` 则覆盖 `parseExpire` 的默认值 `-1`，文件/文本两条路径统一 |
+| H2 | `Content-Length` 头可伪造绕过大小限制 | `uploadFile` 改用 `c.req.arrayBuffer()` 消费实际字节，以 `body.byteLength` 做校验和存储 |
+| H3 | 管理员删除时 R2 失败产生孤儿文件 | 先删 R2，再删 DB；DB 删除用 `finally` 保证执行 |
+| M1 | `uploadFile`/`uploadText` 取件码校验重复 | 提取私有函数 `ensureCodeAvailable(rawCode, env)`，复用两段代码 |
+| M2 | `parseExpire` 第三个参数 `defaultDays` 冗余 | 移除该参数，`'count'` 分支改用 `expireValue` 作为 defaultDays（语义更清晰） |
+
+**改动文件：**
+- `src/shared.ts` — 新增 `ensureCodeAvailable()`，`uploadFile` 改 `arrayBuffer()` 读 body，`parseExpire` 移除 `defaultDays` 参数
+- `src/index.ts` — 管理删除改用 `try/finally`（先 R2 后 DB）
+
+---
+
+### 10.4 第 3 轮审查修复（2026-08-28）
+
+| # | 问题 | 修复方式 |
+|---|------|----------|
+| H1 | `api.ts` `/file/delete` 端点孤儿文件风险 | 改为先删 R2、`deleteFileRecord` 放 `finally`，与 index.ts 管理后台一致；补充 `getFileById` 导入 |
+| H2 | `retrievePage` 中取件码未转义，反射型 XSS | `value="${code ?? ''}"` → `value="${escapeHtml(code ?? '')}"` |
+| M1 | `parseExpire` `'count'` 分支注释误导 | ⏳ 建议将注释改为「`expireValue` 作为天数计算 `expireAt`，`maxDownloads` 由调用方覆盖」 |
+| M2 | `fc_files.ip` 字段从未写入 | ⏳ 建议补充：在 `insertFile` 调用处传入 `CF-Connecting-IP`，或从 schema 移除该列 |
+| M3 | `arrayBuffer()` 内存峰值（原来用流式） | ⚠️ 可接受：安全优先于内存优化；长期可改为流式长度测量 |
+
+**改动文件：**
+- `src/api.ts` — `/file/delete` 改用 `try/finally`，新增 `getFileById` 导入
+- `src/templates/pages.ts` — `retrievePage` 中 `code` 加 `escapeHtml`
+
+---
+
+### 10.5 第 4 轮审查修复（2026-08-28）
+
+| # | 问题 | 修复方式 |
+|---|------|----------|
+| M1 | `parseExpire` `'count'` 分支注释误导 | 修正注释：`expireValue` 为用户设置的最大下载次数，`expireAt` 用天数计算，`maxDownloads` 由调用方覆盖 |
+| M2 | `fc_files.ip` 字段从未写入 | `insertFile` 新增可选参数 `clientIp`，INSERT 语句加入 `ip` 列；`uploadFile`/`uploadText` 传入 `getClientIp(c.req.raw.headers)`；新增 `getClientIp()` 工具函数（utils.ts） |
+| M3 | `arrayBuffer()` 整文件驻留内存 | 改用 `TransformStream` 流式读取 body：边读边计数，超限时 abort，结果通过新 stream 传给 R2，内存峰值降至单个 chunk 级别 |
+
+**改动文件：**
+- `src/shared.ts` — `uploadFile` 改用 `TransformStream` 流式校验大小，两处调用传入 `clientIp`
+- `src/db.ts` — `insertFile` 新增 `clientIp` 参数及 `ip` 列绑定
+- `src/utils.ts` — 新增 `getClientIp(headers: Headers)` 工具函数

@@ -156,7 +156,7 @@ export function retrievePage(code?: string): string {
     </div>
     <form action="/r" method="get">
       <div class="input-group"><label>取件码</label>
-        <input type="text" name="code" value="${code ?? ''}" class="input" placeholder="输入 4 位数字取件码"
+        <input type="text" name="code" value="${escapeHtml(code ?? '')}" class="input" placeholder="输入 4 位数字取件码"
           maxlength="4" required style="text-align:center;font-size:22px;letter-spacing:8px" inputmode="numeric" pattern="[0-9]{4}" autofocus>
       </div>
       <button type="submit" class="btn btn-primary">取件</button>

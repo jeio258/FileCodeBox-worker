@@ -7,19 +7,19 @@ import { cors } from 'hono/cors';
 import type { Context } from 'hono';
 
 import type { Env, FileRecord } from './types';
-import { generateCode, isValidCode, escapeHtml } from './utils';
+
 import {
   initDB,
   getFileByCode,
-  isCodeTaken,
-  insertFile,
-  incrementDownload,
+  getFileById,
   deleteFileRecord,
   listFiles,
   cleanupExpired,
+  incrementDownload,
 } from './db';
 import { adminAuth, handleAdminLogin, handleAdminLogout } from './auth';
 import api from './api';
+import { uploadFile, uploadText, downloadFile } from './shared';
 import { STYLE } from './templates/style';
 import {
   homePage,
@@ -35,7 +35,7 @@ import {
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.use('*', cors());
+app.use('*', cors({ origin: 'self', allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'HEAD'] }));
 app.use('*', async (c, next) => {
   await next();
   c.res.headers.set('Referrer-Policy', 'no-referrer');
@@ -58,10 +58,6 @@ function getBaseUrl(c: Context<{ Bindings: Env }>): string {
   const host = c.req.header('host') || '';
   const proto = host.startsWith('localhost') ? 'http' : 'https';
   return `${proto}://${host}`;
-}
-
-function expireAt(days: number): string {
-  return new Date(Date.now() + days * 86400000).toISOString();
 }
 
 // ===================== 缓存助手 =====================
@@ -135,100 +131,23 @@ app.get('/r/:code', async (c) => {
 // ===================== 文件上传 =====================
 
 app.post('/api/upload', async (c) => {
-  const env = c.env;
   try {
-    // 元数据走 query/header，文件字节流走 raw body，全程零缓冲
-    const rawCode = (c.req.query('code') || '').trim();
-    const code = rawCode || generateCode();
-    // 服务端校验取件码格式：自定义码必须为 4 位数字
-    if (rawCode && !isValidCode(rawCode)) {
-      return c.json({ error: '取件码必须为 4 位数字' }, 400);
-    }
-    const maxDownloads = parseInt(c.req.query('max_downloads') || '-1');
-    const expireDays = parseInt(c.req.query('expire_days') || env.DEFAULT_EXPIRE_DAYS || '7');
-    const filename = decodeURIComponent(c.req.header('X-Filename') || '未命名');
-    const mimeType = c.req.header('Content-Type') || 'application/octet-stream';
-    const size = parseInt(c.req.header('Content-Length') || '0');
-
-    const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
-    if (size > maxSize) {
-      return c.json({ error: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` }, 400);
-    }
-
-    if (await isCodeTaken(env.DB, code)) {
-      return c.json({ error: '取件码已被占用' }, 409);
-    }
-
-    // 原始字节流直接写入 R2，不经 parseBody 缓冲
-    await env.FILE_STORE.put(`file:${code}`, c.req.raw.body, {
-      httpMetadata: { contentType: mimeType },
-      customMetadata: { filename, size: String(size) },
-    });
-
-    await insertFile(env.DB, {
-      code,
-      filename,
-      size,
-      mimeType,
-      expireAt: expireAt(expireDays),
-      maxDownloads,
-    });
-
-    return c.json({ code, filename, size });
+    const result = await uploadFile(c, c.env);
+    return c.json(result);
   } catch (e: any) {
-    console.error('upload error:', e);
-    return c.json({ error: '服务器内部错误' }, 500);
+    const status = e?.status ?? 500;
+    return c.json({ error: e?.message ?? '服务器内部错误' }, status);
   }
 });
 
 // ===================== 文本分享 =====================
 
 app.post('/api/upload/text', async (c) => {
-  const env = c.env;
   try {
-    const body = await c.req.parseBody();
-    const text = ((body['text'] as string) || '').trim();
-    if (!text) return c.html(errorPage('内容为空', '请输入要分享的文本内容'));
-
-    const textSize = new TextEncoder().encode(text).length;
-    const maxTextSize = 512 * 1024; // 512KB
-    if (textSize > maxTextSize) {
-      return c.html(errorPage('文本过长', '最大支持 512KB'));
-    }
-
-    const rawCode = ((body['code'] as string) || '').trim();
-    const code = rawCode || generateCode();
-    if (rawCode && !isValidCode(rawCode)) {
-      return c.html(errorPage('取件码格式错误', '取件码必须为 4 位数字'));
-    }
-    const maxDownloads = parseInt((body['max_downloads'] as string) || '-1');
-    const expireDays = parseInt((body['expire_days'] as string) || env.DEFAULT_EXPIRE_DAYS || '7');
-
-    if (await isCodeTaken(env.DB, code)) {
-      return c.html(errorPage('取件码已被占用', '请换一个取件码重试'));
-    }
-
-    const title = text.replace(/\s+/g, ' ').slice(0, 50) + (text.length > 50 ? '…' : '');
-
-    await env.FILE_STORE.put(`file:${code}`, text, {
-      httpMetadata: { contentType: 'text/plain' },
-      customMetadata: { filename: title, size: String(textSize) },
-    });
-
-    await insertFile(env.DB, {
-      code,
-      filename: title,
-      size: textSize,
-      mimeType: 'text/plain',
-      expireAt: expireAt(expireDays),
-      maxDownloads,
-      isText: 1,
-    });
-
-    return c.html(resultPage(code, title, textSize, getBaseUrl(c)));
+    const result = await uploadText(c, c.env);
+    return c.html(resultPage(result.code, result.title, result.textSize, getBaseUrl(c)));
   } catch (e: any) {
-    console.error('text upload error:', e);
-    return c.html(errorPage('保存失败', '服务器内部错误'));
+    return c.html(errorPage(e?.message ?? '保存失败', '服务器内部错误'));
   }
 });
 
@@ -237,55 +156,37 @@ app.get('/api/text/:code', async (c) => {
   const file = await getFileByCode(c.env.DB, code);
   if (!file || file.is_text !== 1) return c.text('Not found', 404);
 
-  // HEAD 请求是探测，不计入查看次数
   if (c.req.method !== 'HEAD') {
     await incrementDownload(c.env.DB, code);
   }
   const textObj = await c.env.FILE_STORE.get(`file:${code}`);
-  const text = textObj ? await textObj.text() : '';
-  return c.text(text);
+  return c.text(textObj ? await textObj.text() : '');
 });
 
 // ===================== 下载 =====================
 
 app.get('/api/download/:code', async (c) => {
-  const env = c.env;
-  const code = c.req.param('code').trim();
+  try {
+    const result = await downloadFile(c, c.env);
+    if (result.notFound) return c.html(errorPage('文件不存在', '该文件可能已被清理'));
+    if (result.maxExceeded) return c.html(errorPage('已达最大下载次数', '该文件的下载次数已用完'));
 
-  const file = await getFileByCode(env.DB, code);
-  if (!file) return c.html(retrievePage(code));
-
-  const obj = await env.FILE_STORE.get(`file:${code}`);
-  if (!obj) {
-    return c.html(errorPage('文件不存在', '该文件可能已被清理'));
+    const headers: Record<string, string> = {
+      'Content-Type': result.file.mime_type || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.file.filename)}`,
+      'Content-Length': String(result.obj?.size ?? 0),
+    };
+    return new Response(result.isHead ? null : result.obj?.body, { headers });
+  } catch (e: any) {
+    return c.html(errorPage(e?.message ?? '未找到文件', ''));
   }
-
-  // HEAD 请求只是元数据探测，不计入下载次数
-  const isHead = c.req.method === 'HEAD';
-  if (!isHead) {
-    const ok = await incrementDownload(env.DB, code);
-    if (!ok) {
-      return c.html(errorPage('已达最大下载次数', '该文件的下载次数已用完'));
-    }
-  }
-
-  // 直接从 R2 流式返回，不缓冲到内存
-  const headers: Record<string, string> = {
-    'Content-Type': file.mime_type || 'application/octet-stream',
-    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
-    'Content-Length': String(obj.size),
-  };
-  return new Response(isHead ? null : obj.body, { headers });
 });
 
 // ===================== 文件信息 API =====================
 
 app.get('/api/info/:code', async (c) => {
   const code = c.req.param('code').trim();
-  const file = await c.env.DB
-    .prepare("SELECT * FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
-    .bind(code)
-    .first<FileRecord>();
+  const file = await getFileByCode(c.env.DB, code);
   if (!file) return c.json({ error: 'not found' }, 404);
   return c.json({
     filename: file.filename,
@@ -337,10 +238,13 @@ app.post('/api/admin/delete/:id', async (c) => {
   if (!(await adminAuth(c, env))) return c.redirect('/admin');
 
   const id = parseInt(c.req.param('id'));
-  const file = await deleteFileRecord(env.DB, id);
-  if (file) {
-    // 删除 R2 对象（DB 删除已在 deleteFileRecord 内部完成）
+  const file = await getFileById(env.DB, id);
+  if (!file) return c.redirect('/admin');
+  // 先删 R2，再删 DB（finally 保证 DB 清理），避免 R2 删除失败产生孤儿文件
+  try {
     await env.FILE_STORE.delete(`file:${file.code}`);
+  } finally {
+    await deleteFileRecord(env.DB, id);
   }
   return c.redirect('/admin');
 });
