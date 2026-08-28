@@ -5,8 +5,8 @@ export const STYLE = `
 :root {
   /* ---- typography ---- */
   --font-display: "LXGW WenKai", "Noto Serif SC", "PingFang SC", serif;
-  --font-body:    "Inter", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
-  --font-mono:    "JetBrains Mono", "SF Mono", "Cascadia Code", monospace;
+  --font-body:    "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --font-mono:    "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
 
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
