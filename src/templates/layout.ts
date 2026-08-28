@@ -20,7 +20,7 @@ export function layout(title: string, content: string, showFooter = true): strin
   <link rel="icon" href="https://q1.qlogo.cn/g?b=qq&nk=2847495839&s=640">
   <link rel="preconnect" href="https://t.alcy.cc">
   <link rel="preload" as="image" href="https://t.alcy.cc/ycy" fetchpriority="high">
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
   <div class="container">

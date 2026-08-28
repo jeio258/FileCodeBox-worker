@@ -4,6 +4,15 @@ import type { Env } from './types';
 import { hashPassword } from './utils';
 import { getSetting, setSetting, checkLoginRateLimit } from './db';
 
+/** 启动时计算一次管理员密码哈希，避免每次登录重复 PBKDF2 */
+let cachedSecretHash: string | null = null;
+async function getSecretHash(env: Env): Promise<string> {
+  if (!cachedSecretHash) {
+    cachedSecretHash = await hashPassword(env.ADMIN_PASSWORD ?? '');
+  }
+  return cachedSecretHash;
+}
+
 /**
  * 常数时间字符串比较，防止时序攻击。
  * 注意：crypto.subtle.timingSafeEqual 在 workers-types 中尚未声明，此处手动实现。
@@ -63,7 +72,7 @@ export async function handleAdminLogin(
   }
 
   const inputHash = await hashPassword(inputPassword);
-  const secretHash = await hashPassword(env.ADMIN_PASSWORD);
+  const secretHash = await getSecretHash(env);
   if (inputHash !== secretHash) {
     return { success: false, error: '密码错误' };
   }

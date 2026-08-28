@@ -44,9 +44,8 @@ app.use('*', async (c, next) => {
     'Content-Security-Policy',
     "default-src 'self'; " +
       "script-src 'self' 'unsafe-inline'; " +
-      "style-src 'self' 'unsafe-inline' fonts.googleapis.com; " +
+      "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' https://t.alcy.cc https://q1.qlogo.cn https: data:; " +
-      "font-src fonts.gstatic.com; " +
       "object-src 'none'; " +
       "frame-ancestors 'none';",
   );
