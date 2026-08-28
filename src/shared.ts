@@ -41,11 +41,9 @@ export function parseExpire(
 // ===================== 取件码生成 =====================
 
 async function generateUniqueCode(env: Env): Promise<string> {
-  // 增加重试次数，降低碰撞概率
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 10; i++) {
     const code = generateCode();
-    const taken = await isCodeTaken(env.DB, code);
-    if (!taken) return code;
+    if (!await isCodeTaken(env.DB, code)) return code;
   }
   throw new Error('无法生成唯一取件码');
 }
@@ -222,17 +220,15 @@ export async function selectFile(
   const file = await getFileByCode(env.DB, code);
   if (!file) return { file: null, notFound: true, maxExceeded: false };
 
-  // 并行化：同时执行下载计数和 R2 读取
-  const [downloaded, r2Obj] = await Promise.all([
-    countAsDownload ? incrementDownload(env.DB, code) : Promise.resolve(true),
-    file.is_text === 1 ? env.FILE_STORE.get(`file:${code}`) : Promise.resolve(null),
-  ]);
-
-  if (!downloaded) return { file, notFound: false, maxExceeded: true };
+  if (countAsDownload) {
+    const incremented = await incrementDownload(env.DB, code);
+    if (!incremented) return { file, notFound: false, maxExceeded: true };
+  }
 
   let text: string | undefined;
-  if (file.is_text === 1 && r2Obj) {
-    text = await r2Obj.text();
+  if (file.is_text === 1) {
+    const obj = await env.FILE_STORE.get(`file:${code}`);
+    text = obj ? await obj.text() : '';
   }
 
   return { file, notFound: false, maxExceeded: false, text };
