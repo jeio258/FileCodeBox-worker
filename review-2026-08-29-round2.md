@@ -99,6 +99,39 @@ case 'count':
 
 ## 建议后续处理（低优先级）
 
-1. P1: 调整 `getSecretHash` 缓存逻辑（或移除缓存）
-2. P2: 清理 `parseExpire` 的 `count` 死分支
+1. ~~P1: 调整 `getSecretHash` 缓存逻辑~~ ✅ 已处理（2026-08-29 提交 `f1cda47`）
+2. ~~P2: 清理 `parseExpire` 的 `count` 死分支~~ ✅ 已处理（修正为正确语义）
 3. favicon 改为 inline SVG 减少外部请求
+
+---
+
+## 第三轮处理记录（2026-08-29）
+
+### P1 修复（`src/auth.ts`）
+```typescript
+async function getSecretHash(env: Env): Promise<string> {
+  // 密码未配置时不缓存，避免缓存空字符串哈希导致后续登录误判
+  if (!env.ADMIN_PASSWORD) {
+    return await hashPassword('');
+  }
+  if (!cachedSecretHash) {
+    cachedSecretHash = await hashPassword(env.ADMIN_PASSWORD);
+  }
+  return cachedSecretHash;
+}
+```
+
+### P2 修复（`src/shared.ts`）
+```typescript
+case 'count':
+  // 按下载次数过期：expireValue 为最大下载次数，过期时间用默认天数兜底
+  return { expireAt: new Date(now + 30 * 86_400_000).toISOString(), maxDownloads: expireValue };
+```
+
+### M2 评估结论（不改动）
+`listFiles`/`listFilesWithSearch` 的 COUNT 查询已用 `Promise.all` 并行化，且：
+1. 管理后台仅管理员访问，频率极低
+2. 文件定期过期清理，表不会无限增长
+3. `id` 为主键，`COUNT(*)` 走主键扫描（较快）
+
+在当前规模下不是瓶颈，遵循"外科手术式修改"原则不改动。
