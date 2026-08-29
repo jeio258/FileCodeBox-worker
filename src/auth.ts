@@ -7,8 +7,12 @@ import { getSetting, setSetting, checkLoginRateLimit } from './db';
 /** 启动时计算一次管理员密码哈希，避免每次登录重复 PBKDF2 */
 let cachedSecretHash: string | null = null;
 async function getSecretHash(env: Env): Promise<string> {
+  // 密码未配置时不缓存，避免缓存空字符串哈希导致后续登录误判
+  if (!env.ADMIN_PASSWORD) {
+    return await hashPassword('');
+  }
   if (!cachedSecretHash) {
-    cachedSecretHash = await hashPassword(env.ADMIN_PASSWORD ?? '');
+    cachedSecretHash = await hashPassword(env.ADMIN_PASSWORD);
   }
   return cachedSecretHash;
 }

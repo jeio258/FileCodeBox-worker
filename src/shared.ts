@@ -28,8 +28,8 @@ export function parseExpire(
     case 'minute':
       return { expireAt: new Date(now + expireValue * 60_000).toISOString(), maxDownloads: -1 };
     case 'count':
-      // expireValue 为用户设置的最大下载次数；expireAt 用默认天数计算，maxDownloads 由调用方覆盖
-      return { expireAt: new Date(now + expireValue * 86_400_000).toISOString(), maxDownloads: -1 };
+      // 按下载次数过期：expireValue 为最大下载次数，过期时间用默认天数兜底
+      return { expireAt: new Date(now + 30 * 86_400_000).toISOString(), maxDownloads: expireValue };
     case 'forever':
       return { expireAt: new Date(now + 100 * 365 * 86_400_000).toISOString(), maxDownloads: -1 };
     case 'day':
