@@ -84,47 +84,16 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
 
   const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
 
-  // 流式读取 body 并计数，达到限制时 abort，避免 arrayBuffer() 整文件驻留内存
-  let size = 0;
-  const sizeStream = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      size += chunk.byteLength;
-      if (size > maxSize) {
-        controller.error(new Error('overflow'));
-        return;
-      }
-      controller.enqueue(chunk);
-    },
-  });
-  const sizeWriter = sizeStream.writable.getWriter();
-  const bodyReader = (c.req.raw.body as ReadableStream<Uint8Array>).getReader();
+  // 一次性读取请求体（Cloudflare Workers 中 body 只能消费一次），
+  // 计算实际大小并做上限校验，然后转为 Blob 流写入 R2。
+  const requestBody = await c.req.arrayBuffer();
+  const size = requestBody.byteLength;
 
-  // 分阶段：先测量 size，再创建新流用于 R2 写入（避免流被重复消费）
-  await bodyReader.read().then(async function pumpSize({ done, value }: { done: boolean; value?: Uint8Array }): Promise<void> {
-    if (done) return;
-    return sizeWriter.write(value).then(() => bodyReader.read().then(pumpSize));
-  });
-  sizeWriter.close();
-  // 等待 size 测量完成（含 overflow 检测）
-  try {
-    await sizeStream.readable.pipeTo(new WritableStream());
-  } catch (e) {
-    if (e instanceof Error && e.message === 'overflow') {
-      throw { status: 400 as const, message: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` };
-    }
-    throw e;
+  if (size > maxSize) {
+    throw { status: 400 as const, message: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` };
   }
 
-  // 重新读取 body 用于 R2 写入（body 是新的 ReadableStream，可重复获取）
-  const r2Reader = (c.req.raw.body as ReadableStream<Uint8Array>).getReader();
-  const { readable, writable } = new TransformStream();
-  const r2Writer = writable.getWriter();
-  await r2Reader.read().then(async function pumpR2({ done, value }: { done: boolean; value?: Uint8Array }): Promise<void> {
-    if (done) return;
-    return r2Writer.write(value).then(() => r2Reader.read().then(pumpR2));
-  });
-  r2Writer.close();
-
+  const bodyBlob = new Blob([requestBody]);
   const code = await ensureCodeAvailable(rawCode, env);
 
   const { expireAt } = parseExpire(expireDays, 'day');
@@ -132,7 +101,7 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
   const effectiveMaxDownloads = maxDownloads >= 0 ? maxDownloads : -1;
 
   try {
-    await env.FILE_STORE.put(`file:${code}`, readable, {
+    await env.FILE_STORE.put(`file:${code}`, bodyBlob.stream(), {
       httpMetadata: { contentType: mimeType },
       customMetadata: { filename, size: String(size) },
     });
