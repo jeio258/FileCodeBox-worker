@@ -79,7 +79,16 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
   const rawCode = (c.req.query('code') || '').trim();
   const maxDownloads = parseInt(c.req.query('max_downloads') || '-1');
   const expireDays = parseInt(c.req.query('expire_days') || env.DEFAULT_EXPIRE_DAYS || '7');
-  const filename = decodeURIComponent(c.req.header('X-Filename') || '未命名');
+  // 校验 parseInt 结果，非法输入（NaN）回退到默认值，避免 Invalid Date
+  const safeMaxDownloads = Number.isFinite(maxDownloads) ? maxDownloads : -1;
+  const safeExpireDays = Number.isFinite(expireDays) ? expireDays : parseInt(env.DEFAULT_EXPIRE_DAYS || '7');
+  // decodeURIComponent 可能因非法 URI 编码抛 URIError，失败时回退到原始头值
+  let filename = c.req.header('X-Filename') || '未命名';
+  try {
+    filename = decodeURIComponent(filename);
+  } catch {
+    /* 保留原始值 */
+  }
   const mimeType = c.req.header('Content-Type') || 'application/octet-stream';
 
   const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
@@ -96,9 +105,9 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
   const bodyBlob = new Blob([requestBody]);
   const code = await ensureCodeAvailable(rawCode, env);
 
-  const { expireAt } = parseExpire(expireDays, 'day');
+  const { expireAt } = parseExpire(safeExpireDays, 'day');
   // 用户指定的 max_downloads 优先于 parseExpire 的默认值 -1
-  const effectiveMaxDownloads = maxDownloads >= 0 ? maxDownloads : -1;
+  const effectiveMaxDownloads = safeMaxDownloads >= 0 ? safeMaxDownloads : -1;
 
   try {
     await env.FILE_STORE.put(`file:${code}`, bodyBlob.stream(), {
@@ -164,11 +173,14 @@ export async function uploadText(
   const rawCode = ((body['code'] as string) || '').trim();
   const maxDownloads = parseInt((body['max_downloads'] as string) || '-1');
   const expireDays = parseInt((body['expire_days'] as string) || env.DEFAULT_EXPIRE_DAYS || '7');
+  // 校验 parseInt 结果，非法输入（NaN）回退到默认值，避免 Invalid Date
+  const safeMaxDownloads = Number.isFinite(maxDownloads) ? maxDownloads : -1;
+  const safeExpireDays = Number.isFinite(expireDays) ? expireDays : parseInt(env.DEFAULT_EXPIRE_DAYS || '7');
 
   const code = await ensureCodeAvailable(rawCode, env);
 
-  const { expireAt } = parseExpire(expireDays, 'day');
-  const effectiveMaxDownloads = maxDownloads >= 0 ? maxDownloads : -1;
+  const { expireAt } = parseExpire(safeExpireDays, 'day');
+  const effectiveMaxDownloads = safeMaxDownloads >= 0 ? safeMaxDownloads : -1;
   const title = text.replace(/\s+/g, ' ').slice(0, 50) + (text.length > 50 ? '…' : '');
 
   try {

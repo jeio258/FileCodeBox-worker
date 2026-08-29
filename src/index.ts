@@ -114,11 +114,11 @@ app.get('/', (c) => {
   return c.html(homePage());
 });
 
-// 取件页（静态，可缓存）
+// 取件页（静态，但需避免错误响应被 CDN 缓存，使用 no-store）
 app.get('/r', (c) => {
   const code = (c.req.query('code') || '').trim();
   if (code) return c.redirect(`/r/${code}`);
-  c.header('Cache-Control', 'public, max-age=300');
+  c.header('Cache-Control', 'no-store');
   return c.html(retrievePage());
 });
 
