@@ -108,8 +108,11 @@ app.get('/static/bg.webp', (c) =>
 
 // ===================== 页面路由 =====================
 
-// 首页（纯静态，可缓存）
-app.get('/', (c) => cached(c, () => c.html(homePage()), 300));
+// 首页（纯静态，但需避免 500 响应被 CDN 缓存，使用 no-store）
+app.get('/', (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.html(homePage());
+});
 
 // 取件页（静态，可缓存）
 app.get('/r', (c) => {
