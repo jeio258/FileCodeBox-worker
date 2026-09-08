@@ -22,7 +22,7 @@ import {
 import { adminAuth, handleAdminLogin, handleAdminLogout } from './auth';
 import api from './api';
 import { uploadFile, uploadText, downloadFile } from './shared';
-import { generateQRCodePNG } from './qr';
+import { generateQRCodeSVG } from './qr';
 import { STYLE } from './templates/style';
 import {
   homePage,
@@ -203,8 +203,8 @@ app.get('/qrcode/:code', async (c) => {
     if (!file) return c.text('File not found', 404);
     const baseUrl = getBaseUrl(c);
     const url = `${baseUrl}/r/${code}`;
-    const png = await generateQRCodePNG(url, 200);
-    return c.body(png, 200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=31536000, immutable' });
+    const svg = await generateQRCodeSVG(url, 200);
+    return c.body(svg, 200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=31536000, immutable' });
   } catch (e) {
     console.error('[QR] Error:', e);
     return c.text(`QR Error: ${e instanceof Error ? e.message : String(e)}`, 500);
