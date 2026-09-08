@@ -1,11 +1,7 @@
-import QRCode from 'qrcode';
+import encodeQR from 'qr';
 
-/** 生成 QR 码 SVG 字符串 */
-export async function generateQRCodeSVG(data: string, size: number = 200): Promise<string> {
-  return QRCode.toString(data, {
-    type: 'svg',
-    width: size,
-    margin: 1,
-    color: { dark: '#000000', light: '#ffffff' },
-  });
+/** 生成 QR 码 GIF Buffer（零依赖，Worker 兼容） */
+export async function generateQRCodeGIF(data: string, size: number = 200): Promise<Buffer> {
+  const gif = encodeQR(data, 'gif', { scale: Math.max(1, Math.floor(size / 29)) });
+  return Buffer.from(gif);
 }
