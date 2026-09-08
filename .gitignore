@@ -8,3 +8,5 @@ dist/
 worker-configuration.d.ts
 worker-configuration.d.ts
 DEPLOY_CHECKLIST.md
+
+review*.md
