@@ -20,7 +20,6 @@ export function layout(title: string, content: string, showFooter = true, wide =
   <title>${title}</title>
   <link rel="icon" href="https://q1.qlogo.cn/g?b=qq&nk=2847495839&s=640">
   <link rel="preconnect" href="/static">
-  <link rel="preload" as="image" href="/static/bg.webp" fetchpriority="high">
   <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
