@@ -73,12 +73,16 @@ export async function isCodeTaken(db: D1Database, code: string): Promise<boolean
   return row !== null;
 }
 
-/** 记录取件码为已使用（调用前确保 code 格式正确） */
-export async function markCodeUsed(db: D1Database, code: string): Promise<void> {
-  await db
+/**
+ * 原子抢占取件码：INSERT OR IGNORE + changes 判定。
+ * 并发同码时仅一个请求返回 true，消除 check-then-act 竞态窗口。
+ */
+export async function claimCode(db: D1Database, code: string): Promise<boolean> {
+  const result = await db
     .prepare('INSERT OR IGNORE INTO fc_used_codes(code) VALUES (?)')
     .bind(code)
     .run();
+  return result.meta.changes === 1;
 }
 
 /** 释放取件码（删除/过期后允许复用） */
