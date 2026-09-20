@@ -433,12 +433,20 @@ export async function cleanupOrphanedR2Objects(
   db: D1Database,
   bucket: R2Bucket,
 ): Promise<{ scanned: number; removed: number }> {
-  const listed = await bucket.list({ prefix: 'file:' });
-  const keys = listed.objects.map((o) => o.key);
+  // cursor 翻页收集全部 file: 对象（4 位码全空间上限约 1 万个 ≈ 11 页），
+  // 只扫首页会永久漏扫字典序靠后的 key
+  const objects: R2Object[] = [];
+  let cursor: string | undefined;
+  do {
+    const listed = await bucket.list({ prefix: 'file:', cursor });
+    objects.push(...listed.objects);
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  const keys = objects.map((o) => o.key);
   if (keys.length === 0) return { scanned: 0, removed: 0 };
 
-  // 批量查询 D1 中存在的取件码（每批 1000 个，D1 IN 上限约 900，这里安全截断）
-  const BATCH = 900;
+  // 批量查询 D1 中存在的取件码（D1 单条查询绑定变量上限 100）
+  const BATCH = 100;
   const activeCodes = new Set<string>();
   for (let i = 0; i < keys.length; i += BATCH) {
     // R2 key 带 file: 前缀，D1 code 无前缀，查询前必须剥离
@@ -455,7 +463,7 @@ export async function cleanupOrphanedR2Objects(
   // 窗口内的正常对象无 D1 记录，过早清理会静默丢数据
   const GRACE_MS = 3_600_000;
   const now = Date.now();
-  const orphans = listed.objects
+  const orphans = objects
     .filter((o) => !activeCodes.has(o.key.replace('file:', '')) && now - o.uploaded.getTime() > GRACE_MS)
     .map((o) => o.key);
   if (orphans.length === 0) return { scanned: keys.length, removed: 0 };
