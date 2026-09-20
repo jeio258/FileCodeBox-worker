@@ -447,8 +447,13 @@ export async function cleanupOrphanedR2Objects(
     for (const row of rows.results ?? []) activeCodes.add(row.code);
   }
 
-  // 删除孤儿对象（不在 D1 中的）
-  const orphans = keys.filter((k) => !activeCodes.has(k.replace('file:', '')));
+  // 删除孤儿对象（不在 D1 中的）。宽限期 1 小时：上传先写 R2 后写 D1，
+  // 窗口内的正常对象无 D1 记录，过早清理会静默丢数据
+  const GRACE_MS = 3_600_000;
+  const now = Date.now();
+  const orphans = listed.objects
+    .filter((o) => !activeCodes.has(o.key.replace('file:', '')) && now - o.uploaded.getTime() > GRACE_MS)
+    .map((o) => o.key);
   if (orphans.length === 0) return { scanned: keys.length, removed: 0 };
 
   await Promise.all(orphans.map((k) => bucket.delete(k)));
