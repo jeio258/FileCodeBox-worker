@@ -437,7 +437,8 @@ export async function cleanupOrphanedR2Objects(
   const BATCH = 900;
   const activeCodes = new Set<string>();
   for (let i = 0; i < keys.length; i += BATCH) {
-    const batch = keys.slice(i, i + BATCH);
+    // R2 key 带 file: 前缀，D1 code 无前缀，查询前必须剥离
+    const batch = keys.slice(i, i + BATCH).map((k) => k.replace('file:', ''));
     const placeholders = batch.map(() => '?').join(',');
     const rows = await db
       .prepare(`SELECT code FROM fc_files WHERE code IN (${placeholders})`)

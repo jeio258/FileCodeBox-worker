@@ -253,10 +253,20 @@ export function filePage(file: FileRecord, baseUrl: string): string {
           var ctrl = new AbortController();
           var timer = setTimeout(function(){ ctrl.abort(); }, 8000);
           fetch('/api/text/${file.code}', { signal: ctrl.signal })
-            .then(function(r){ return r.text(); })
-            .then(function(t){
+            .then(function(r){
               clearTimeout(timer);
-              el.textContent = t;
+              if (!r.ok) {
+                var msg = r.status === 403 ? '\u8be5\u5185\u5bb9\u5df2\u8fbe\u6700\u5927\u67e5\u770b\u6b21\u6570\u3002'
+                        : r.status === 404 ? '\u5185\u5bb9\u4e0d\u5b58\u5728\u6216\u5df2\u88ab\u6e05\u7406\u3002'
+                        : '\u5185\u5bb9\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002';
+                el.textContent = msg;
+                el.style.color = 'var(--color-danger)';
+                return null;
+              }
+              return r.text();
+            })
+            .then(function(t){
+              if (t !== null) el.textContent = t;
             })
             .catch(function(err){
               clearTimeout(timer);
