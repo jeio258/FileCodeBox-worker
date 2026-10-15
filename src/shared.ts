@@ -99,40 +99,86 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
 
   const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600');
 
-  // Content-Length 预检：超限直接拒绝，避免读入大请求体占用内存；
-  // 头部缺失时（如 chunked）回退到读取后校验
+  // Content-Length 预检：超限直接拒绝，不读 body；头部缺失时（如 chunked）由下方流式计数兜底
   const contentLength = Number(c.req.header('Content-Length'));
   if (Number.isFinite(contentLength) && contentLength > maxSize) {
     throw { status: 413 as const, message: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` };
   }
 
-  // 一次性读取请求体（Cloudflare Workers 中 body 只能消费一次），
-  // 计算实际大小并做上限校验，然后转为 Blob 流写入 R2。
-  const requestBody = await c.req.arrayBuffer();
-  const size = requestBody.byteLength;
-
-  if (size > maxSize) {
-    throw { status: 413 as const, message: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` };
-  }
-
-  const bodyBlob = new Blob([requestBody]);
   const code = await ensureCodeAvailable(rawCode, env);
 
   const { expireAt, maxDownloads: parsedMaxDownloads } = parseExpire(safeExpireValue, expireStyleRaw);
   // 用户显式指定的 max_downloads 优先，否则用 expire_style=count 推得的次数（默认不限）
   const effectiveMaxDownloads = safeMaxDownloads >= 0 ? safeMaxDownloads : parsedMaxDownloads;
 
+  const reader = (c.req.raw.body ?? new ReadableStream()).getReader();
+  const key = `file:${code}`;
   try {
-    await env.FILE_STORE.put(`file:${code}`, bodyBlob.stream(), {
+    // R2 put 要求流有已知长度，且请求体只能消费一次：
+    // 改用 multipart 边读边传（单块 5MB，内存与文件大小无关），同时计数做上限校验，
+    // 超限时 abort 自动清理已传分片
+    const mp = await env.FILE_STORE.createMultipartUpload(key, {
       httpMetadata: { contentType: mimeType },
-      customMetadata: { filename, size: String(size) },
+      customMetadata: { filename },
     });
+    // 非最后块必须固定 PART_SIZE（R2 要求除最后块外各 part 大小严格一致），
+    // 用固定缓冲精确切块，最后剩余（<PART_SIZE）作为尾块
+    const PART_SIZE = 5 * 1024 * 1024;
+    let size = 0;
+    let partNumber = 1;
+    let buf = new Uint8Array(PART_SIZE);
+    let bufLen = 0;
+    const uploadedParts: R2UploadedPart[] = [];
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxSize) {
+          await reader.cancel().catch(() => {});
+          throw new Error('SIZE_LIMIT_EXCEEDED');
+        }
+        let v = value;
+        while (v.byteLength > 0) {
+          const take = Math.min(PART_SIZE - bufLen, v.byteLength);
+          buf.set(v.subarray(0, take), bufLen);
+          bufLen += take;
+          if (bufLen === PART_SIZE) {
+            uploadedParts.push(await mp.uploadPart(partNumber++, buf));
+            buf = new Uint8Array(PART_SIZE);
+            bufLen = 0;
+          }
+          v = v.subarray(take);
+        }
+      }
+      // 空文件：multipart 需至少 1 个 part，直接 put 空对象（known length）
+      if (size === 0) {
+        await mp.abort();
+        await env.FILE_STORE.put(key, new Uint8Array(0), {
+          httpMetadata: { contentType: mimeType },
+          customMetadata: { filename },
+        });
+      } else {
+        if (bufLen > 0) {
+          uploadedParts.push(await mp.uploadPart(partNumber++, buf.subarray(0, bufLen)));
+        }
+        await mp.complete(uploadedParts);
+      }
+    } catch (e) {
+      await mp.abort().catch(() => {});
+      throw e;
+    }
     await insertFile(env.DB, {
       code, filename, size, mimeType, expireAt, maxDownloads: effectiveMaxDownloads, clientIp: getClientIp(c.req.raw.headers),
     });
     return { code, filename, size };
   } catch (e) {
     await releaseCode(env.DB, code);  // 写入失败则释放码
+    // 清除可能残留的对象（multipart abort 已清理分片，此为幂等兜底）
+    await env.FILE_STORE.delete(key).catch(() => {});
+    if (e instanceof Error && e.message === 'SIZE_LIMIT_EXCEEDED') {
+      throw { status: 413 as const, message: `文件过大，最大 ${Math.floor(maxSize / 1048576)}MB` };
+    }
     throw e;
   }
 }
