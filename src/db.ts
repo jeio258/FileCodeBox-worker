@@ -21,6 +21,18 @@ export async function initDB(db: D1Database): Promise<void> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS fc_chunk_uploads (
+      upload_id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      total_chunks INTEGER NOT NULL,
+      mime_type TEXT DEFAULT 'application/octet-stream',
+      expire_at TEXT NOT NULL,
+      max_downloads INTEGER DEFAULT -1,
+      client_ip TEXT DEFAULT '',
+      created_at TEXT NOT NULL
+    )`,
   ];
   const migrations = [
     'ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0',
@@ -306,6 +318,56 @@ export async function setSetting(
     .prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)')
     .bind(key, value)
     .run();
+}
+
+// ---- 分片上传任务 ----
+
+export interface ChunkUploadTask {
+  upload_id: string;
+  code: string;
+  filename: string;
+  size: number;
+  total_chunks: number;
+  mime_type: string;
+  expire_at: string;
+  max_downloads: number;
+  client_ip: string;
+  created_at: string;
+}
+
+export async function insertChunkTask(db: D1Database, t: ChunkUploadTask): Promise<void> {
+  await db
+    .prepare(
+      'INSERT INTO fc_chunk_uploads(upload_id, code, filename, size, total_chunks, mime_type, expire_at, max_downloads, client_ip, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    )
+    .bind(t.upload_id, t.code, t.filename, t.size, t.total_chunks, t.mime_type, t.expire_at, t.max_downloads, t.client_ip, t.created_at)
+    .run();
+}
+
+export async function getChunkTask(db: D1Database, uploadId: string): Promise<ChunkUploadTask | null> {
+  return db.prepare('SELECT * FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).first<ChunkUploadTask>();
+}
+
+export async function deleteChunkTask(db: D1Database, uploadId: string): Promise<ChunkUploadTask | null> {
+  const t = await getChunkTask(db, uploadId);
+  if (t) await db.prepare('DELETE FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).run();
+  return t;
+}
+
+/** 清理超过宽限期未 complete 的分片上传任务（scheduled 调用），并返回需释放取件码的任务 */
+export async function cleanupChunkTasks(db: D1Database, olderThanMs: number): Promise<ChunkUploadTask[]> {
+  const rows = await db
+    .prepare('SELECT * FROM fc_chunk_uploads WHERE datetime(created_at) <= datetime(?)')
+    .bind(new Date(Date.now() - olderThanMs).toISOString())
+    .all<ChunkUploadTask>();
+  const tasks = rows.results ?? [];
+  if (tasks.length > 0) {
+    await db
+      .prepare('DELETE FROM fc_chunk_uploads WHERE datetime(created_at) <= datetime(?)')
+      .bind(new Date(Date.now() - olderThanMs).toISOString())
+      .run();
+  }
+  return tasks;
 }
 
 // ---- 速率限制（D1 存储） ----

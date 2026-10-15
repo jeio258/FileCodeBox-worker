@@ -22,6 +22,14 @@ import {
 import { adminAuth, handleAdminLogin, handleAdminLogout } from './auth';
 import api from './api';
 import { uploadFile, uploadText, downloadFile } from './shared';
+import {
+  chunkInit,
+  chunkPut,
+  chunkStatus,
+  chunkComplete,
+  chunkAbort,
+  cleanupStaleChunkUploads,
+} from './chunk';
 import { generateQRCodeGIF } from './qr';
 import { STYLE } from './templates/style';
 import {
@@ -284,6 +292,49 @@ app.get('/api/init', async (c) => {
   }
 });
 
+// ===================== 分片上传 =====================
+
+// 分片上传（30MB/片，300MB 封顶）：init 建任务 → put 逐片 → complete 拼接
+app.post('/api/upload/chunk/init', async (c) => {
+  try {
+    return c.json(await chunkInit(c, c.env));
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? '服务器内部错误' }, e?.status ?? 500);
+  }
+});
+
+app.put('/api/upload/chunk/:upload_id/:index', async (c) => {
+  try {
+    return c.json(await chunkPut(c, c.env));
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? '服务器内部错误' }, e?.status ?? 500);
+  }
+});
+
+app.get('/api/upload/chunk/status/:upload_id', async (c) => {
+  try {
+    return c.json(await chunkStatus(c, c.env));
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? '服务器内部错误' }, e?.status ?? 500);
+  }
+});
+
+app.post('/api/upload/chunk/complete/:upload_id', async (c) => {
+  try {
+    return c.json(await chunkComplete(c, c.env));
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? '服务器内部错误' }, e?.status ?? 500);
+  }
+});
+
+app.post('/api/upload/chunk/abort/:upload_id', async (c) => {
+  try {
+    return c.json(await chunkAbort(c, c.env));
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? '服务器内部错误' }, e?.status ?? 500);
+  }
+});
+
 // ===================== FileCodeBox 兼容 API =====================
 // 挂载在 /api 前缀，路径与 FileCodeBox v2.1.0 文档一致（如 /api/share/file）
 app.route('/api', api);
@@ -309,6 +360,7 @@ export default {
           const { expiredCount, cleanedCodes } = await cleanupExpired(env.DB, env.FILE_STORE);
           const { scanned, removed } = await cleanupOrphanedR2Objects(env.DB, env.FILE_STORE);
           const rateLimitCleaned = await cleanupRateLimitEntries(env.DB);
+          const staleChunkTasks = await cleanupStaleChunkUploads(env);
           console.log(JSON.stringify({
             event: 'scheduled_cleanup',
             expiredCount,
@@ -316,6 +368,7 @@ export default {
             r2Scanned: scanned,
             r2Removed: removed,
             rateLimitCleaned,
+            staleChunkTasks,
           }));
         } catch (e) {
           console.error(JSON.stringify({ event: 'scheduled_cleanup_error', error: String(e) }));

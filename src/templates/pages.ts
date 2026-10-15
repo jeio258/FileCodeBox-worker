@@ -85,6 +85,11 @@ export function homePage(): string {
                 '&max_downloads=' + encodeURIComponent(maxDownloads) +
                 '&expire_days=' + encodeURIComponent(expireDays);
 
+      // 大文件（>100MB，超出普通上传平台单请求限制）走分片上传：30MB/片，并发 4 片，失败重试
+      if (file.size > 100 * 1024 * 1024) {
+        return chunkUpload(file, { code: code, maxDownloads: maxDownloads, expireDays: expireDays }, btn, progress, progressBar, status, resetUpload);
+      }
+
       function resetUpload() {
         btn.disabled = false;
         btn.textContent = '\u4e0a\u4f20\u5e76\u83b7\u53d6\u53d6\u4ef6\u7801';
@@ -135,6 +140,102 @@ export function homePage(): string {
       };
 
       xhr.send(file);
+    }
+
+    // 分片上传：init → 并发 4 片 put（失败重试 3 次，重试前查 status 跳过已传片）→ complete
+    function chunkUpload(file, opts, btn, progress, progressBar, status, resetUpload) {
+      var CHUNK = 30 * 1024 * 1024;
+      var CONCURRENCY = 4;
+      var totalChunks = Math.ceil(file.size / CHUNK);
+      var uploadedBytes = 0;
+      var failed = [];
+
+      btn.disabled = true;
+      btn.textContent = '\u5206\u7247\u4e0a\u4f20\u4e2d\u2026';
+      progress.style.display = 'block';
+      status.style.display = 'block';
+      status.textContent = '\u5206\u7247\u4e0a\u4f20 0/' + totalChunks;
+
+      function updateProgress() {
+        var pct = Math.round(uploadedBytes / file.size * 100);
+        progressBar.style.width = pct + '%';
+        status.textContent = '\u5207\u7247\u4e0a\u4f20\u4e2d ' + Math.round(uploadedBytes / (1024*1024)) + '/' + Math.round(file.size / (1024*1024)) + ' MB (' + pct + '%)';
+      }
+
+      function fail(msg) {
+        status.textContent = msg;
+        resetUpload();
+      }
+
+      function putChunk(uploadId, index) {
+        var slice = file.slice(index * CHUNK, Math.min((index + 1) * CHUNK, file.size));
+        return fetch('/api/upload/chunk/' + uploadId + '/' + index, { method: 'PUT', body: slice })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+          .then(function (res) {
+            if (!res.ok) throw new Error(res.j.error || '\u5206\u7247\u4e0a\u4f20\u5931\u8d25');
+            uploadedBytes += slice.size;
+            updateProgress();
+          });
+      }
+
+      // 并发池：同时跑 CONCURRENCY 个分片，失败的进 failed 列表待重试
+      function runPool(uploadId, indexes) {
+        var next = 0;
+        var retry = {};
+        function worker() {
+          if (next >= indexes.length) return Promise.resolve();
+          var idx = indexes[next++];
+          return putChunk(uploadId, idx).catch(function () {
+            retry[idx] = (retry[idx] || 0) + 1;
+            if (retry[idx] <= 3) { indexes.push(idx); return worker(); }
+            failed.push(idx);
+            return Promise.resolve();
+          }).then(worker);
+        }
+        return Promise.all(Array.from({ length: Math.min(CONCURRENCY, indexes.length) }, worker));
+      }
+
+      // 重试前先查 status，跳过已上传的分片（断点续传）
+      function skipUploaded(uploadId, indexes) {
+        return fetch('/api/upload/chunk/status/' + uploadId).then(function (r) { return r.json(); })
+          .then(function (s) {
+            if (s && s.received) {
+              var have = {}; s.received.forEach(function (i) { have[i] = 1; });
+              return indexes.filter(function (i) { return !have[i]; });
+            }
+            return indexes;
+          })
+          .catch(function () { return indexes; });
+      }
+
+      fetch('/api/upload/chunk/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: file.name,
+          size: file.size,
+          total_chunks: totalChunks,
+          mime_type: file.type || 'application/octet-stream',
+          code: opts.code,
+          max_downloads: opts.maxDownloads,
+          expire_days: opts.expireDays
+        })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (init) {
+          if (!init.upload_id) throw new Error(init.error || '\u521d\u59cb\u5316\u5931\u8d25');
+          return runPool(init.upload_id, Array.from({ length: totalChunks }, function (_, i) { return i; })).then(function () {
+            if (failed.length > 0) throw new Error('\u6709 ' + failed.length + ' \u7247\u4e0a\u4f20\u5931\u8d25');
+            status.textContent = '\u5408\u5e76\u4e2d\u2026';
+            return fetch('/api/upload/chunk/complete/' + init.upload_id, { method: 'POST' }).then(function (r) { return r.json(); });
+          }).then(function (res) {
+            if (!res.code) throw new Error(res.error || '\u5408\u5e76\u5931\u8d25');
+            window.location.href = '/r/' + res.code;
+          });
+        })
+        .catch(function (e) {
+          fail(e.message || '\u5206\u7247\u4e0a\u4f20\u5931\u8d25');
+        });
     }
     </script>`;
   return layout('FileCodeBox', content);

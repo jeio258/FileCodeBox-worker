@@ -46,7 +46,7 @@ export function parseExpire(
  * isCodeTaken 预检双表快速失败；claimCode（INSERT OR IGNORE + changes）为
  * 原子门闩，并发同码时仅一个请求成功，失败方不再继续写 R2/D1。
  */
-async function ensureCodeAvailable(rawCode: string, env: Env): Promise<string> {
+export async function ensureCodeAvailable(rawCode: string, env: Env): Promise<string> {
   if (rawCode && !isValidCode(rawCode)) {
     throw { status: 400 as const, message: '取件码必须为 4 位数字' };
   }
@@ -114,65 +114,25 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
   const reader = (c.req.raw.body ?? new ReadableStream()).getReader();
   const key = `file:${code}`;
   try {
-    // R2 put 要求流有已知长度，且请求体只能消费一次：
-    // 改用 multipart 边读边传（单块 5MB，内存与文件大小无关），同时计数做上限校验，
-    // 超限时 abort 自动清理已传分片
-    const mp = await env.FILE_STORE.createMultipartUpload(key, {
-      httpMetadata: { contentType: mimeType },
-      customMetadata: { filename },
-    });
-    // 非最后块必须固定 PART_SIZE（R2 要求除最后块外各 part 大小严格一致），
-    // 30MB 权衡：part 数更少、complete 开销更低（R2 单 part 上限 5GB），内存峰值约 30MB
-    const PART_SIZE = 30 * 1024 * 1024;
-    let size = 0;
-    let partNumber = 1;
-    let buf = new Uint8Array(PART_SIZE);
-    let bufLen = 0;
-    const uploadedParts: R2UploadedPart[] = [];
+    // 流式写入：请求体只能消费一次，经共享 writer 切 30MB 分块传 R2 multipart
+    const writer = await createMultipartWriter(env.FILE_STORE, key, { contentType: mimeType, filename, maxSize });
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        size += value.byteLength;
-        if (size > maxSize) {
-          await reader.cancel().catch(() => {});
-          throw new Error('SIZE_LIMIT_EXCEEDED');
-        }
-        let v = value;
-        while (v.byteLength > 0) {
-          const take = Math.min(PART_SIZE - bufLen, v.byteLength);
-          buf.set(v.subarray(0, take), bufLen);
-          bufLen += take;
-          if (bufLen === PART_SIZE) {
-            uploadedParts.push(await mp.uploadPart(partNumber++, buf));
-            buf = new Uint8Array(PART_SIZE);
-            bufLen = 0;
-          }
-          v = v.subarray(take);
-        }
+        await writer.push(value);
       }
-      // 空文件：multipart 需至少 1 个 part，直接 put 空对象（known length）
-      if (size === 0) {
-        await mp.abort();
-        await env.FILE_STORE.put(key, new Uint8Array(0), {
-          httpMetadata: { contentType: mimeType },
-          customMetadata: { filename },
-        });
-      } else {
-        if (bufLen > 0) {
-          uploadedParts.push(await mp.uploadPart(partNumber++, buf.subarray(0, bufLen)));
-        }
-        await mp.complete(uploadedParts);
-      }
+      const size = await writer.finish();
+      await insertFile(env.DB, {
+        code, filename, size, mimeType, expireAt, maxDownloads: effectiveMaxDownloads, clientIp: getClientIp(c.req.raw.headers),
+      });
+      return { code, filename, size };
     } catch (e) {
-      await mp.abort().catch(() => {});
+      await writer.abort().catch(() => {});
       throw e;
     }
-    await insertFile(env.DB, {
-      code, filename, size, mimeType, expireAt, maxDownloads: effectiveMaxDownloads, clientIp: getClientIp(c.req.raw.headers),
-    });
-    return { code, filename, size };
   } catch (e) {
+    await reader.cancel().catch(() => {});
     await releaseCode(env.DB, code);  // 写入失败则释放码
     // 清除可能残留的对象（multipart abort 已清理分片，此为幂等兜底）
     await env.FILE_STORE.delete(key).catch(() => {});
@@ -181,6 +141,77 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
     }
     throw e;
   }
+}
+
+// ===================== multipart 写入器 =====================
+
+/**
+ * R2 multipart 流式写入器（uploadFile 与分片 complete 共用）。
+ * R2 put 不接受未知长度流，故用 multipart：push 累计字节并切固定 30MB 分块
+ * （R2 要求除最后块外各 part 大小严格一致），超限抛 SIZE_LIMIT_EXCEEDED。
+ * 内存峰值约 30MB，与文件总大小无关。
+ */
+export async function createMultipartWriter(
+  bucket: R2Bucket,
+  key: string,
+  opts: { contentType: string; filename: string; maxSize: number },
+): Promise<{
+  push(chunk: Uint8Array): Promise<void>;
+  finish(): Promise<number>;
+  abort(): Promise<void>;
+}> {
+  const PART_SIZE = 30 * 1024 * 1024;
+  const mp = await bucket.createMultipartUpload(key, {
+    httpMetadata: { contentType: opts.contentType },
+    customMetadata: { filename: opts.filename },
+  });
+  let size = 0;
+  let partNumber = 1;
+  let buf = new Uint8Array(PART_SIZE);
+  let bufLen = 0;
+  const uploadedParts: R2UploadedPart[] = [];
+  let closed = false;
+
+  async function push(chunk: Uint8Array): Promise<void> {
+    if (closed) throw new Error('writer closed');
+    size += chunk.byteLength;
+    if (size > opts.maxSize) throw new Error('SIZE_LIMIT_EXCEEDED');
+    let v = chunk;
+    while (v.byteLength > 0) {
+      const take = Math.min(PART_SIZE - bufLen, v.byteLength);
+      buf.set(v.subarray(0, take), bufLen);
+      bufLen += take;
+      if (bufLen === PART_SIZE) {
+        uploadedParts.push(await mp.uploadPart(partNumber++, buf));
+        buf = new Uint8Array(PART_SIZE);
+        bufLen = 0;
+      }
+      v = v.subarray(take);
+    }
+  }
+
+  async function finish(): Promise<number> {
+    closed = true;
+    // 空对象：multipart 需至少 1 个 part，直接 put 空对象（known length）
+    if (size === 0) {
+      await mp.abort();
+      await bucket.put(key, new Uint8Array(0), {
+        httpMetadata: { contentType: opts.contentType },
+        customMetadata: { filename: opts.filename },
+      });
+      return 0;
+    }
+    if (bufLen > 0) uploadedParts.push(await mp.uploadPart(partNumber++, buf.subarray(0, bufLen)));
+    await mp.complete(uploadedParts);
+    return size;
+  }
+
+  async function abort(): Promise<void> {
+    closed = true;
+    await mp.abort().catch(() => {});
+  }
+
+  return { push, finish, abort };
 }
 
 // ===================== 文件下载 =====================
