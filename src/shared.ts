@@ -122,8 +122,8 @@ export async function uploadFile(c: Context<{ Bindings: Env }>, env: Env): Promi
       customMetadata: { filename },
     });
     // 非最后块必须固定 PART_SIZE（R2 要求除最后块外各 part 大小严格一致），
-    // 用固定缓冲精确切块，最后剩余（<PART_SIZE）作为尾块
-    const PART_SIZE = 5 * 1024 * 1024;
+    // 30MB 权衡：part 数更少、complete 开销更低（R2 单 part 上限 5GB），内存峰值约 30MB
+    const PART_SIZE = 30 * 1024 * 1024;
     let size = 0;
     let partNumber = 1;
     let buf = new Uint8Array(PART_SIZE);

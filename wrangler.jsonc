@@ -8,7 +8,7 @@
     "crons": ["*/30 * * * *"]
   },
   "vars": {
-    "MAX_FILE_SIZE": "104857600",
+    "MAX_FILE_SIZE": "314572800",
     "DEFAULT_EXPIRE_DAYS": "7"
   },
   "d1_databases": [{
