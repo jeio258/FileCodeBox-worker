@@ -12,6 +12,7 @@ import {
   insertChunkTask,
   getChunkTask,
   deleteChunkTask,
+  touchChunkTask,
   cleanupChunkTasks,
   insertFile,
   releaseCode,
@@ -69,6 +70,7 @@ export async function chunkInit(c: Context<{ Bindings: Env }>, env: Env): Promis
   const { expireAt, maxDownloads } = parseExpireFromBody(body, env);
 
   const uploadId = crypto.randomUUID();
+  const now = new Date().toISOString();
   await insertChunkTask(env.DB, {
     upload_id: uploadId,
     code,
@@ -79,7 +81,8 @@ export async function chunkInit(c: Context<{ Bindings: Env }>, env: Env): Promis
     expire_at: expireAt,
     max_downloads: maxDownloads,
     client_ip: ip,
-    created_at: new Date().toISOString(),
+    created_at: now,
+    updated_at: now,
   });
   return { upload_id: uploadId, code, chunk_size: CHUNK_SIZE, total_chunks: totalChunks };
 }
@@ -101,6 +104,8 @@ export async function chunkPut(c: Context<{ Bindings: Env }>, env: Env): Promise
   await env.FILE_STORE.put(chunkKey(uploadId, index), body, {
     httpMetadata: { contentType: 'application/octet-stream' },
   });
+  // 刷新最后活跃时间，避免断点续传中的任务被超时清理
+  await touchChunkTask(env.DB, uploadId);
   return { ok: true, index };
 }
 
@@ -189,9 +194,9 @@ export async function chunkAbort(c: Context<{ Bindings: Env }>, env: Env): Promi
   return { ok: true };
 }
 
-/** scheduled 清理超时未完成的分片上传任务 */
+/** scheduled 清理 6h 未活跃的分片上传任务（活跃的断点续传不被误清） */
 export async function cleanupStaleChunkUploads(env: Env): Promise<number> {
-  const tasks = await cleanupChunkTasks(env.DB, 24 * 3600 * 1000);
+  const tasks = await cleanupChunkTasks(env.DB, 6 * 3600 * 1000);
   for (const t of tasks) {
     await Promise.all(Array.from({ length: t.total_chunks }, (_, i) => env.FILE_STORE.delete(chunkKey(t.upload_id, i))));
     await releaseCode(env.DB, t.code);

@@ -31,7 +31,8 @@ export async function initDB(db: D1Database): Promise<void> {
       expire_at TEXT NOT NULL,
       max_downloads INTEGER DEFAULT -1,
       client_ip TEXT DEFAULT '',
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )`,
   ];
   const migrations = [
@@ -333,19 +334,28 @@ export interface ChunkUploadTask {
   max_downloads: number;
   client_ip: string;
   created_at: string;
+  updated_at: string;
 }
 
 export async function insertChunkTask(db: D1Database, t: ChunkUploadTask): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO fc_chunk_uploads(upload_id, code, filename, size, total_chunks, mime_type, expire_at, max_downloads, client_ip, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO fc_chunk_uploads(upload_id, code, filename, size, total_chunks, mime_type, expire_at, max_downloads, client_ip, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     )
-    .bind(t.upload_id, t.code, t.filename, t.size, t.total_chunks, t.mime_type, t.expire_at, t.max_downloads, t.client_ip, t.created_at)
+    .bind(t.upload_id, t.code, t.filename, t.size, t.total_chunks, t.mime_type, t.expire_at, t.max_downloads, t.client_ip, t.created_at, t.updated_at)
     .run();
 }
 
 export async function getChunkTask(db: D1Database, uploadId: string): Promise<ChunkUploadTask | null> {
   return db.prepare('SELECT * FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).first<ChunkUploadTask>();
+}
+
+/** 分片上传时刷新最后活跃时间，断点续传中的任务不会被超时清理误删 */
+export async function touchChunkTask(db: D1Database, uploadId: string): Promise<void> {
+  await db
+    .prepare('UPDATE fc_chunk_uploads SET updated_at = ? WHERE upload_id = ?')
+    .bind(new Date().toISOString(), uploadId)
+    .run();
 }
 
 export async function deleteChunkTask(db: D1Database, uploadId: string): Promise<ChunkUploadTask | null> {
@@ -354,17 +364,18 @@ export async function deleteChunkTask(db: D1Database, uploadId: string): Promise
   return t;
 }
 
-/** 清理超过宽限期未 complete 的分片上传任务（scheduled 调用），并返回需释放取件码的任务 */
+/** 清理超过宽限期未活跃的分片上传任务（scheduled 调用），并返回需释放取件码的任务 */
 export async function cleanupChunkTasks(db: D1Database, olderThanMs: number): Promise<ChunkUploadTask[]> {
+  const cutoff = new Date(Date.now() - olderThanMs).toISOString();
   const rows = await db
-    .prepare('SELECT * FROM fc_chunk_uploads WHERE datetime(created_at) <= datetime(?)')
-    .bind(new Date(Date.now() - olderThanMs).toISOString())
+    .prepare('SELECT * FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)')
+    .bind(cutoff)
     .all<ChunkUploadTask>();
   const tasks = rows.results ?? [];
   if (tasks.length > 0) {
     await db
-      .prepare('DELETE FROM fc_chunk_uploads WHERE datetime(created_at) <= datetime(?)')
-      .bind(new Date(Date.now() - olderThanMs).toISOString())
+      .prepare('DELETE FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)')
+      .bind(cutoff)
       .run();
   }
   return tasks;

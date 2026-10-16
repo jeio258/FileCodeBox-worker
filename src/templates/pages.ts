@@ -337,7 +337,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
               <a href="/admin">管理</a>
             </div>
           </div>
-          <div class="share-title">${escapeHtml(file.filename)}</div>
+          <div class="share-title">文本</div>
           <div class="command-box">
             <div class="command-text" id="textContent">加载中…</div>
             <button class="btn-copy-cmd" id="copyAllBtn" hidden onclick="var s=this.querySelector('span');navigator.clipboard.writeText(window.__shareText||'').then(function(){s.textContent='已复制';setTimeout(function(){s.textContent='复制全文'},1500)})">
