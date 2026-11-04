@@ -45,8 +45,10 @@ export async function initDB(db: D1Database): Promise<void> {
   for (const stmt of stmts) {
     await db.prepare(stmt).run();
   }
-  // 旧库补列：已存在时 sqlite 报错，忽略即可
-  await db.prepare('ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0').run().catch(() => {});
+  // 旧库补列（列已存在时 sqlite 报 duplicate，忽略即可）
+  const migrate = (sql: string) => db.prepare(sql).run().catch(() => {});
+  await migrate('ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0');
+  await migrate("ALTER TABLE fc_chunk_uploads ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
 }
 
 // ===================== 文件 =====================
