@@ -4,7 +4,7 @@ import { layout } from './layout';
 
 // ---- 首页 ----
 
-export function homePage(): string {
+export function homePage(opts: { chunkThreshold: number }): string {
   const content = `
     <div class="header">
       <div>
@@ -63,6 +63,7 @@ export function homePage(): string {
     </div>
 
     <script>
+    var CHUNK_THRESHOLD = ${opts.chunkThreshold};
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(function(t){ t.classList.toggle('active', t.getAttribute('data-tab') === name) });
       document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active') });
@@ -85,9 +86,9 @@ export function homePage(): string {
                 '&max_downloads=' + encodeURIComponent(maxDownloads) +
                 '&expire_days=' + encodeURIComponent(expireDays);
 
-      // 大文件（>100MB，超出普通上传平台单请求限制）走分片上传：30MB/片，并发 4 片，失败重试
-      if (file.size > 100 * 1024 * 1024) {
-        return chunkUpload(file, { code: code, maxDownloads: maxDownloads, expireDays: expireDays }, btn, progress, progressBar, status, resetUpload);
+      // 超过平台单请求上限（免费计划 100MB）的文件走分片上传
+      if (file.size > CHUNK_THRESHOLD) {
+        return chunkUpload(file, { code: code, maxDownloads: maxDownloads, expireDays: expireDays }, { btn: btn, progress: progress, progressBar: progressBar, status: status, reset: resetUpload });
       }
 
       function resetUpload() {
@@ -142,8 +143,9 @@ export function homePage(): string {
       xhr.send(file);
     }
 
-    // 分片上传：init → 并发 4 片 put（失败重试 3 次，重试前查 status 跳过已传片）→ complete
-    function chunkUpload(file, opts, btn, progress, progressBar, status, resetUpload) {
+    // 分片上传：init → 并发 4 片 put（单片最多重试 3 次）→ complete
+    function chunkUpload(file, opts, ui) {
+      var btn = ui.btn, progress = ui.progress, progressBar = ui.progressBar, status = ui.status, resetUpload = ui.reset;
       var CHUNK = 30 * 1024 * 1024;
       var CONCURRENCY = 4;
       var totalChunks = Math.ceil(file.size / CHUNK);
@@ -159,7 +161,7 @@ export function homePage(): string {
       function updateProgress() {
         var pct = Math.round(uploadedBytes / file.size * 100);
         progressBar.style.width = pct + '%';
-        status.textContent = '\u5207\u7247\u4e0a\u4f20\u4e2d ' + Math.round(uploadedBytes / (1024*1024)) + '/' + Math.round(file.size / (1024*1024)) + ' MB (' + pct + '%)';
+        status.textContent = '\u5206\u7247\u4e0a\u4f20\u4e2d ' + Math.round(uploadedBytes / 1048576) + '/' + Math.round(file.size / 1048576) + ' MB (' + pct + '%)';
       }
 
       function fail(msg) {
@@ -193,19 +195,6 @@ export function homePage(): string {
           }).then(worker);
         }
         return Promise.all(Array.from({ length: Math.min(CONCURRENCY, indexes.length) }, worker));
-      }
-
-      // 重试前先查 status，跳过已上传的分片（断点续传）
-      function skipUploaded(uploadId, indexes) {
-        return fetch('/api/upload/chunk/status/' + uploadId).then(function (r) { return r.json(); })
-          .then(function (s) {
-            if (s && s.received) {
-              var have = {}; s.received.forEach(function (i) { have[i] = 1; });
-              return indexes.filter(function (i) { return !have[i]; });
-            }
-            return indexes;
-          })
-          .catch(function () { return indexes; });
       }
 
       fetch('/api/upload/chunk/init', {
@@ -308,7 +297,7 @@ function shareRightPanel(code: string, shareUrl: string): string {
       <div class="share-divider"></div>
       <img src="/qrcode/${code}" alt="QR Code" class="qr-img" loading="lazy">
       <div class="qr-title">扫码快速分享</div>
-      <button class="btn btn-secondary share-link-btn" onclick="navigator.clipboard.writeText('${escapeHtml(shareUrl)}')">复制分享链接</button>
+      <button class="btn btn-secondary share-link-btn" data-copy="${escapeHtml(shareUrl)}" onclick="codeCopy(this, this.dataset.copy)">复制分享链接</button>
     </div>`;
 }
 
@@ -320,11 +309,10 @@ export function filePage(file: FileRecord, baseUrl: string): string {
     expireDate.getTime() - Date.now() > 365 * 86400000
       ? '永久有效'
       : `过期: ${expireDate.toLocaleDateString('zh-CN')}`;
-  const expired = expireDate.getTime() < Date.now();
   const shareUrl = `${baseUrl}/r/${file.code}`;
 
-  // 文本内容 — 双栏：左侧内容框，右侧取件码/二维码
-  if (file.is_text === 1 && !expired) {
+  // 文本分享 — 双栏：左侧内容框，右侧取件码/二维码
+  if (file.is_text === 1) {
     const content = `
       <div class="share-grid">
         <div class="share-left">
@@ -395,7 +383,6 @@ export function filePage(file: FileRecord, baseUrl: string): string {
 
   // 文件下载页 — 双栏：左侧文件信息/下载，右侧取件码/二维码
   const content = `
-    ${expired ? '<div style="text-align:center;color:var(--color-danger);font-size:14px;margin-bottom:16px">此文件已过期</div>' : ''}
     <div class="share-grid">
       <div class="share-left">
         <div class="header">
@@ -414,7 +401,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
             </svg>
           </div>
-          ${!expired ? `<a href="/api/download/${file.code}" class="btn btn-primary" style="width:auto;padding:12px 40px">下载文件</a>` : ''}
+          <a href="/api/download/${file.code}" class="btn btn-primary" style="width:auto;padding:12px 40px">下载文件</a>
         </div>
         <div class="meta-row">
           <span>${sizeStr}</span>
@@ -431,8 +418,8 @@ export function filePage(file: FileRecord, baseUrl: string): string {
 
 export function errorPage(title: string, message: string): string {
   const content = `
-    <div class="header"><h1>${title}</h1></div>
-    <p style="text-align:center">${message}</p>
+    <div class="header"><h1>${escapeHtml(title)}</h1></div>
+    <p style="text-align:center">${escapeHtml(message)}</p>
     <a href="/" class="btn btn-secondary" style="margin-top:16px">返回</a>`;
   return layout(title, content);
 }
@@ -466,7 +453,6 @@ export function adminPanel(
   files: FileRecord[],
   total: number,
   page: number,
-  error?: string,
   filters?: { keyword: string; dateFrom: string; dateTo: string; sort: string },
 ): string {
   const totalPages = Math.ceil(total / 50);
@@ -520,7 +506,6 @@ export function adminPanel(
         <a href="/admin/logout">退出</a>
       </div>
     </div>
-    ${error ? `<div style="color:var(--color-danger);text-align:center;margin-bottom:14px;font-size:14px">${error}</div>` : ''}
 
     <!-- 筛选栏 -->
     <form method="get" action="/admin" style="margin-bottom:14px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">

@@ -1,159 +1,141 @@
 /**
- * FileCodeBox 兼容 API（v2.1.0）
- * 标准响应格式: { code, msg, detail }
+ * FileCodeBox 兼容 API（v2.1.0，路径挂载在 /api）。
+ * 标准响应格式 { code, msg, detail }；业务逻辑全部来自领域模块，本文件只做路由与格式转换。
  * 文档: https://fcb-docs.aiuo.net/api/
- *
- * 业务逻辑由 src/shared.ts 统一实现，本文件仅负责路由注册与响应格式转换。
  */
+
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from './types';
-import { formatFileSize } from './utils';
-import { getFileById, deleteFileRecord, listFilesAdvanced, getDashboardStats, getSetting, setSetting } from './db';
+import { formatFileSize, messageOf, statusOf } from './utils';
+import { getConfig } from './config';
+import { getDashboardStats, getFileById, listFiles, setSetting } from './db';
 import { adminAuth, handleAdminLogin } from './auth';
-import { uploadFile, uploadText, selectFile as sharedSelectFile, downloadFile as sharedDownloadFile } from './shared';
+import { buildDownloadResponse, deleteStoredFile, lookupFile } from './files';
+import { uploadFile, uploadText } from './upload';
 
-type Bindings = { Bindings: Env };
+type Ctx = Context<{ Bindings: Env }>;
 
 // ===================== 响应助手 =====================
 
-function ok(c: Context<Bindings>, detail: unknown, msg = 'success') {
-  return c.json({ code: 200, msg, detail });
-}
+const ok = (c: Ctx, detail: unknown, msg = 'success') => c.json({ code: 200, msg, detail });
 
-function fail(c: Context<Bindings>, status: ContentfulStatusCode, msg: string) {
-  return c.json({ code: status, msg }, status);
-}
+/** 业务异常统一转成兼容格式 */
+const fail = (c: Ctx, e: unknown, fallbackMsg = '服务器内部错误') =>
+  c.json({ code: statusOf(e), msg: messageOf(e, fallbackMsg) }, statusOf(e) as ContentfulStatusCode);
 
-// ===================== 上传门控 =====================
+const failWith = (c: Ctx, status: number, msg: string) =>
+  c.json({ code: status, msg }, status as ContentfulStatusCode);
 
-/**
- * 游客上传开关（openUpload）。
- * 默认 '1'（免登录游客可上传）；设为 '0' 时需 Bearer token 才能上传。
- */
-async function uploadGate(c: Context<Bindings>, next: () => Promise<void>) {
-  const openUpload = (await getSetting(c.env.DB, 'open_upload')) ?? '1';
-  if (openUpload !== '0') return next();
-  if (await adminAuth(c, c.env)) return next();
-  return c.json({ code: 401, msg: '游客上传已关闭，请先登录' }, 401);
-}
+/** 兼容带/不带尾斜杠两种写法 */
+const register = (method: 'get' | 'post', path: string, handler: (c: Ctx) => Response | Promise<Response>) => {
+  api[method](path, handler);
+  api[method](`${path}/`, handler);
+};
 
 // ===================== 路由 =====================
 
-const api = new Hono<Bindings>();
+const api = new Hono<{ Bindings: Env }>();
 
 // ---- 认证（公开） ----
 api.post('/admin/login', async (c) => {
-  const env = c.env;
-  const body = await c.req.json().catch(() => null);
-  const password = (body?.password as string) || '';
-  if (!password) return fail(c, 422, '密码不能为空');
+  const body = await c.req.json<{ password?: string }>().catch(() => null);
+  const password = body?.password ?? '';
+  if (!password) return failWith(c, 422, '密码不能为空');
 
-  const result = await handleAdminLogin(c, env, password);
-  if (!result.success) return fail(c, 401, result.error);
-
+  const result = await handleAdminLogin(c, c.env, password);
+  if (!result.success) return failWith(c, 401, result.error);
   return ok(c, { token: result.token, token_type: 'Bearer' });
 });
 
-// ---- 分享文本 ----
-const shareText = async (c: Context<Bindings>) => {
+// ---- 分享文本 / 文件（兼容带与不带尾斜杠两种写法） ----
+const shareTextHandler = async (c: Ctx) => {
   try {
     const result = await uploadText(c, c.env);
     return ok(c, { code: result.code });
-  } catch (e: any) {
-    return fail(c, e?.status ?? 500, e?.message ?? '服务器内部错误');
+  } catch (e) {
+    return fail(c, e);
   }
 };
-api.post('/share/text/', uploadGate, shareText);
-api.post('/share/text', uploadGate, shareText);
+register('post', '/share/text', shareTextHandler);
 
-// ---- 分享文件 ----
-const shareFile = async (c: Context<Bindings>) => {
+const shareFileHandler = async (c: Ctx) => {
   try {
     const result = await uploadFile(c, c.env);
     return ok(c, { code: result.code, name: result.filename });
-  } catch (e: any) {
-    return fail(c, e?.status ?? 500, e?.message ?? '服务器内部错误');
+  } catch (e) {
+    return fail(c, e);
   }
 };
-api.post('/share/file/', uploadGate, shareFile);
-api.post('/share/file', uploadGate, shareFile);
+register('post', '/share/file', shareFileHandler);
 
-// ---- 获取/选择文件信息 ----
-async function selectFile(c: Context<Bindings>, countAsDownload: boolean) {
+// ---- 取件信息（GET 计入次数，POST 只查询） ----
+async function selectHandler(c: Ctx, count: boolean) {
+  const code = (c.req.query('code') ?? c.req.query('key') ?? '').trim();
   try {
-    const result = await sharedSelectFile(c, c.env, countAsDownload);
-    if (result.notFound) return fail(c, 404, '文件不存在或已过期');
-    if (result.maxExceeded) return fail(c, 403, '已达最大下载次数');
-    const file = result.file!;
+    const lookup = await lookupFile(c.env, code, { count, isHead: false });
+    if (lookup.status === 'notFound') return failWith(c, 404, '文件不存在或已过期');
+    if (lookup.status === 'maxExceeded') return failWith(c, 403, '已达最大下载次数');
+
+    const { file, obj } = lookup;
     return ok(c, {
       code: file.code,
       name: file.filename,
       size: file.size,
-      text: result.text,
+      text: file.is_text === 1 ? await obj.text() : undefined,
     });
-  } catch (e: any) {
-    return fail(c, e?.status ?? 500, e?.message ?? '服务器内部错误');
+  } catch (e) {
+    return fail(c, e);
   }
 }
 
-api.get('/share/select/', (c) => selectFile(c, true));
-api.post('/share/select/', (c) => selectFile(c, false));
-api.get('/share/select', (c) => selectFile(c, true));
-api.post('/share/select', (c) => selectFile(c, false));
+register('get', '/share/select', (c) => selectHandler(c, true));
+register('post', '/share/select', (c) => selectHandler(c, false));
 
 // ---- 下载 ----
-api.get('/share/download', async (c) => {
+const downloadHandler = async (c: Ctx) => {
+  const code = (c.req.query('code') ?? c.req.query('key') ?? '').trim();
   try {
-    const result = await sharedDownloadFile(c, c.env);
-    if (result.notFound) return fail(c, 404, '文件不存在或已过期');
-    if (result.maxExceeded) return fail(c, 403, '已达最大下载次数');
-
-    return new Response(result.isHead ? null : result.obj?.body, {
-      headers: {
-        'Content-Type': result.file!.mime_type || 'application/octet-stream',
-        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.file!.filename)}`,
-        'Content-Length': String(result.obj?.size ?? 0),
-      },
-    });
-  } catch (e: any) {
-    return fail(c, e?.status ?? 500, e?.message ?? '服务器内部错误');
+    const lookup = await lookupFile(c.env, code, { count: true, isHead: c.req.method === 'HEAD' });
+    if (lookup.status === 'notFound') return failWith(c, 404, '文件不存在或已过期');
+    if (lookup.status === 'maxExceeded') return failWith(c, 403, '已达最大下载次数');
+    return buildDownloadResponse(lookup.file, lookup.obj, c.req.method === 'HEAD');
+  } catch (e) {
+    return fail(c, e);
   }
-});
+};
+register('get', '/share/download', downloadHandler);
 
 // ---- 管理（受保护） ----
-
-const adminApi = new Hono<Bindings>();
+const adminApi = new Hono<{ Bindings: Env }>();
 
 adminApi.use('*', async (c, next) => {
-  if (!(await adminAuth(c, c.env))) {
-    return c.json({ code: 401, msg: '未授权' }, 401);
-  }
+  if (!(await adminAuth(c, c.env))) return failWith(c, 401, '未授权');
   await next();
 });
 
 adminApi.get('/dashboard', async (c) => {
-  const stats = await getDashboardStats(c.env.DB);
+  const s = await getDashboardStats(c.env.DB);
   return ok(c, {
-    totalFiles: stats.totalFiles,
-    storageUsed: formatFileSize(stats.totalSize),
-    todayCount: stats.todayCount,
-    todaySize: formatFileSize(stats.todaySize),
-    yesterdayCount: stats.yesterdayCount,
-    yesterdaySize: formatFileSize(stats.yesterdaySize),
+    totalFiles: s.totalFiles,
+    storageUsed: formatFileSize(s.totalSize),
+    todayCount: s.todayCount,
+    todaySize: formatFileSize(s.todaySize),
+    yesterdayCount: s.yesterdayCount,
+    yesterdaySize: formatFileSize(s.yesterdaySize),
   });
 });
 
 adminApi.get('/file/list', async (c) => {
-  const env = c.env;
-  const page = Math.max(1, parseInt(c.req.query('page') || '1'));
-  const size = Math.min(100, Math.max(1, parseInt(c.req.query('size') || '10')));
-  const keyword = c.req.query('keyword') || '';
-  const dateFrom = c.req.query('date_from') || '';
-  const dateTo = c.req.query('date_to') || '';
-  const sort = c.req.query('sort') || 'newest';
-  const { files, total } = await listFilesAdvanced(env.DB, page, size, keyword, dateFrom, dateTo, sort);
+  const page = Math.max(1, Number(c.req.query('page')) || 1);
+  const size = Math.min(100, Math.max(1, Number(c.req.query('size')) || 10));
+  const { files, total } = await listFiles(c.env.DB, page, size, {
+    keyword: c.req.query('keyword') ?? '',
+    dateFrom: c.req.query('date_from') ?? '',
+    dateTo: c.req.query('date_to') ?? '',
+    sort: c.req.query('sort') ?? 'newest',
+  });
   return ok(c, {
     page,
     size,
@@ -171,44 +153,39 @@ adminApi.get('/file/list', async (c) => {
 });
 
 adminApi.delete('/file/delete', async (c) => {
-  const env = c.env;
-  const id = parseInt(c.req.query('id') || '');
-  if (!id) return fail(c, 422, '缺少文件 ID');
+  const id = Number(c.req.query('id'));
+  if (!Number.isInteger(id)) return failWith(c, 422, '缺少文件 ID');
 
-  const file = await getFileById(env.DB, id);
-  if (!file) return fail(c, 404, '文件不存在');
-  // 先删 R2，再删 DB（finally 保证 DB 清理），避免 R2 删除失败产生孤儿文件
-  try {
-    await env.FILE_STORE.delete(`file:${file.code}`);
-  } finally {
-    await deleteFileRecord(env.DB, id);
-  }
+  const file = await getFileById(c.env.DB, id);
+  if (!file) return failWith(c, 404, '文件不存在');
+  await deleteStoredFile(c.env, file);
   return ok(c, { id });
 });
 
-adminApi.get('/config/get', async (c) => {
-  const env = c.env;
-  return ok(c, {
-    openUpload: (await getSetting(env.DB, 'open_upload')) ?? '1',
-    maxFileSize: (await getSetting(env.DB, 'max_file_size')) ?? env.MAX_FILE_SIZE,
-    defaultExpireDays: (await getSetting(env.DB, 'default_expire_days')) ?? env.DEFAULT_EXPIRE_DAYS,
-  });
-});
+async function readConfig(c: Ctx) {
+  const config = await getConfig(c.env);
+  return {
+    openUpload: config.openUpload ? '1' : '0',
+    maxFileSize: String(config.maxSize),
+    defaultExpireDays: String(config.defaultExpireDays),
+  };
+}
+
+adminApi.get('/config/get', async (c) => ok(c, await readConfig(c)));
 
 adminApi.patch('/config/update', async (c) => {
-  const env = c.env;
-  const body = await c.req.json().catch(() => null);
-  if (!body) return fail(c, 422, '请求体不能为空');
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+  if (!body) return failWith(c, 422, '请求体不能为空');
 
-  if (body.openUpload !== undefined) await setSetting(env.DB, 'open_upload', String(body.openUpload));
-  if (body.maxFileSize !== undefined) await setSetting(env.DB, 'max_file_size', String(body.maxFileSize));
-  if (body.defaultExpireDays !== undefined) await setSetting(env.DB, 'default_expire_days', String(body.defaultExpireDays));
-
-  return ok(c, {
-    openUpload: (await getSetting(env.DB, 'open_upload')) ?? '1',
-    maxFileSize: (await getSetting(env.DB, 'max_file_size')) ?? env.MAX_FILE_SIZE,
-    defaultExpireDays: (await getSetting(env.DB, 'default_expire_days')) ?? env.DEFAULT_EXPIRE_DAYS,
-  });
+  const mapping: Record<string, string> = {
+    openUpload: 'open_upload',
+    maxFileSize: 'max_file_size',
+    defaultExpireDays: 'default_expire_days',
+  };
+  for (const [field, key] of Object.entries(mapping)) {
+    if (body[field] !== undefined) await setSetting(c.env.DB, key, String(body[field]));
+  }
+  return ok(c, await readConfig(c));
 });
 
 api.route('/admin', adminApi);

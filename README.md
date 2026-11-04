@@ -260,7 +260,7 @@ curl -X PATCH "https://你的域名/admin/config/update" \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ADMIN_PASSWORD` | - | 管理员密码（**Secret**，`wrangler secret put` 设置） |
-| `MAX_FILE_SIZE` | `104857600` | 最大文件大小 (100MB) |
+| `MAX_FILE_SIZE` | `314572800` | 最大文件大小 (300MB，可在管理面板覆盖) |
 | `DEFAULT_EXPIRE_DAYS` | `7` | 默认过期天数 |
 
 ## 📁 项目结构
@@ -268,13 +268,16 @@ curl -X PATCH "https://你的域名/admin/config/update" \
 ```
 FileCodeBox-worker/
 ├── src/
-│   ├── index.ts               # 主程序 — Web UI 路由
-│   ├── api.ts                 # FileCodeBox v2.1.0 兼容 API
-│   ├── shared.ts              # 共享业务逻辑（上传/下载/过期/取件码，单一数据源）
-│   ├── auth.ts                # 认证: 登录/登出/速率限制
-│   ├── db.ts                  # 数据库: 增删改查 + 限流
-│   ├── types.ts               # 类型定义
-│   ├── utils.ts               # 工具: 取件码/哈希/IP 提取
+│   ├── index.ts               # Web 路由（页面/上传/下载/管理）+ Cron
+│   ├── api.ts                 # FileCodeBox v2.1.0 兼容 API（挂载 /api）
+│   ├── upload.ts              # 上传域：普通/文本/分片（init·put·status·complete·abort）
+│   ├── files.ts               # 读取域：取件解析/计数/下载响应/删除/孤儿清理
+│   ├── config.ts              # 运行配置（env + D1 覆盖）与过期策略
+│   ├── storage.ts             # R2 层：multipart 写入器、分片读写
+│   ├── db.ts                  # D1 层：表结构、文件/设置/限流/分片任务
+│   ├── auth.ts                # 认证：登录/登出/限流/上传门控
+│   ├── utils.ts               # 常量、HttpError、取件码、哈希、格式化
+│   ├── types.ts               # 领域类型
 │   └── templates/
 │       ├── layout.ts          # HTML 布局
 │       ├── style.ts           # 暖纸墨色设计系统 CSS
@@ -286,11 +289,12 @@ FileCodeBox-worker/
 
 ## 🏗️ 架构设计
 
-- **单一业务逻辑源**：`shared.ts` 统一实现上传/下载/过期/取件码逻辑，`index.ts` 和 `api.ts` 均为薄路由封装
-- **取件码复用机制**：4 位码删除/过期后通过 `releaseCode()` 释放，可循环使用
-- **上传实现**：`arrayBuffer()` 一次性读取请求体（body 只能消费一次），计算大小后转 `Blob` 流写入 R2
-- **下载计数**：`incrementDownload` 原子更新，避免并发超限
-- **过期清理**：Cron 每 30 分钟触发 `cleanupExpired`，并发删除 R2 + DB 记录
+- **分层单向依赖**：`utils` → `db`/`storage` → `config` → `files`/`upload` → `auth` → 路由（`index`/`api`）。路由只做参数与响应转换，业务逻辑单一实现
+- **配置单一来源**：`MAX_FILE_SIZE`/`DEFAULT_EXPIRE_DAYS` 以 env 为默认，管理面板设置可覆盖（`config.getConfig`）
+- **上传实现**：R2 multipart 流式写入（30MB/块，内存与文件大小无关）；>100MB 走分片上传（30MB/片，断点续传、并发、失败重试）
+- **取件码复用机制**：原子抢占（`claimCode`）+ 删除/过期/取消后 `releaseCode` 释放，可循环使用
+- **下载计数**：`incrementDownload` 原子更新，避免并发超限；HEAD 不计数
+- **过期清理**：Cron 每 30 分钟清理过期文件、孤儿 R2 对象、限流键、超时分片任务
 
 ## 🔧 技术栈
 

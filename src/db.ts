@@ -1,6 +1,11 @@
-import type { FileRecord } from './types';
+/** 数据层：仅 D1 读写，不涉及 R2 与 HTTP。 */
 
-/** 初始化数据库表（幂等，可多次调用） */
+import type { ChunkUploadTask, FileRecord } from './types';
+import { FILE_PREFIX } from './utils';
+
+// ===================== 建表 =====================
+
+/** 初始化数据库表（幂等：scheduled 每次调用都执行，首次部署自动就绪） */
 export async function initDB(db: D1Database): Promise<void> {
   const stmts = [
     `CREATE TABLE IF NOT EXISTS fc_files (
@@ -13,10 +18,12 @@ export async function initDB(db: D1Database): Promise<void> {
       download_count INTEGER DEFAULT 0,
       max_downloads INTEGER DEFAULT -1,
       created_at TEXT NOT NULL,
-      ip TEXT DEFAULT ''
+      ip TEXT DEFAULT '',
+      is_text INTEGER DEFAULT 0
     )`,
     'CREATE INDEX IF NOT EXISTS idx_fc_code ON fc_files(code)',
     'CREATE INDEX IF NOT EXISTS idx_fc_expire ON fc_files(expire_at)',
+    'CREATE TABLE IF NOT EXISTS fc_used_codes (code TEXT PRIMARY KEY)',
     `CREATE TABLE IF NOT EXISTS fc_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -35,75 +42,26 @@ export async function initDB(db: D1Database): Promise<void> {
       updated_at TEXT NOT NULL
     )`,
   ];
-  const migrations = [
-    'ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0',
-  ];
-  for (const s of stmts) {
-    try { await db.prepare(s).run(); } catch { /* ignore */ }
+  for (const stmt of stmts) {
+    await db.prepare(stmt).run();
   }
-  for (const m of migrations) {
-    try { await db.prepare(m).run(); } catch { /* column already exists — ok */ }
-  }
-
-  // 取件码使用记录表：记录所有曾经使用过的取件码（含已过期/已删除），防止重复占用
-  try {
-    await db.prepare(`CREATE TABLE IF NOT EXISTS fc_used_codes (
-      code TEXT PRIMARY KEY
-    )`).run();
-  } catch { /* ignore */ }
+  // 旧库补列：已存在时 sqlite 报错，忽略即可
+  await db.prepare('ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0').run().catch(() => {});
 }
 
-// ---- 文件查询 ----
+// ===================== 文件 =====================
 
-export async function getFileByCode(
-  db: D1Database,
-  code: string,
-): Promise<FileRecord | null> {
+/** 取件码查询（仅未过期文件） */
+export async function getFileByCode(db: D1Database, code: string): Promise<FileRecord | null> {
   return db
     .prepare("SELECT * FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
     .bind(code)
     .first<FileRecord>();
 }
 
-export async function getFileById(
-  db: D1Database,
-  id: number,
-): Promise<FileRecord | null> {
+export async function getFileById(db: D1Database, id: number): Promise<FileRecord | null> {
   return db.prepare('SELECT * FROM fc_files WHERE id = ?').bind(id).first<FileRecord>();
 }
-
-export async function isCodeTaken(db: D1Database, code: string): Promise<boolean> {
-  // 单次查询：合并历史记录和活跃文件检查
-  const row = await db
-    .prepare(`
-      SELECT 1 FROM fc_used_codes WHERE code = ?
-      UNION ALL
-      SELECT 1 FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')
-      LIMIT 1
-    `)
-    .bind(code, code)
-    .first();
-  return row !== null;
-}
-
-/**
- * 原子抢占取件码：INSERT OR IGNORE + changes 判定。
- * 并发同码时仅一个请求返回 true，消除 check-then-act 竞态窗口。
- */
-export async function claimCode(db: D1Database, code: string): Promise<boolean> {
-  const result = await db
-    .prepare('INSERT OR IGNORE INTO fc_used_codes(code) VALUES (?)')
-    .bind(code)
-    .run();
-  return result.meta.changes === 1;
-}
-
-/** 释放取件码（删除/过期后允许复用） */
-export async function releaseCode(db: D1Database, code: string): Promise<void> {
-  await db.prepare('DELETE FROM fc_used_codes WHERE code = ?').bind(code).run();
-}
-
-// ---- 插入 ----
 
 export async function insertFile(
   db: D1Database,
@@ -136,12 +94,8 @@ export async function insertFile(
     .run();
 }
 
-// ---- 下载计数 ----
-
-export async function incrementDownload(
-  db: D1Database,
-  code: string,
-): Promise<boolean> {
+/** 下载计数：已达上限时不递增，返回 false */
+export async function incrementDownload(db: D1Database, code: string): Promise<boolean> {
   const result = await db
     .prepare(
       `UPDATE fc_files SET download_count = download_count + 1
@@ -152,113 +106,118 @@ export async function incrementDownload(
   return result.meta.changes > 0;
 }
 
-// ---- 删除 ----
-
-export async function deleteFileRecord(
-  db: D1Database,
-  id: number,
-): Promise<FileRecord | null> {
+/** 删除记录并释放取件码 */
+export async function deleteFileRecord(db: D1Database, id: number): Promise<void> {
   const file = await getFileById(db, id);
-  if (file) {
-    await db.prepare('DELETE FROM fc_files WHERE id = ?').bind(id).run();
-    await releaseCode(db, file.code);
-  }
-  return file;
+  if (!file) return;
+  await db.prepare('DELETE FROM fc_files WHERE id = ?').bind(id).run();
+  await releaseCode(db, file.code);
 }
 
-/**
- * 清理 fc_used_codes 中已无对应文件的记录（含已过期未清理的）。
- * 作为防御性清理：若某次删除中途失败导致 releaseCode 未执行，
- * 此函数可在下次 scheduled 时补清，防止取件码被永久占用。
- */
+// ===================== 取件码占用 =====================
+
+export async function isCodeTaken(db: D1Database, code: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM fc_used_codes WHERE code = ?
+       UNION ALL
+       SELECT 1 FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')
+       LIMIT 1`,
+    )
+    .bind(code, code)
+    .first();
+  return row !== null;
+}
+
+/** 原子抢占：INSERT OR IGNORE + changes，并发同码仅一个成功 */
+export async function claimCode(db: D1Database, code: string): Promise<boolean> {
+  const result = await db.prepare('INSERT OR IGNORE INTO fc_used_codes(code) VALUES (?)').bind(code).run();
+  return result.meta.changes === 1;
+}
+
+export async function releaseCode(db: D1Database, code: string): Promise<void> {
+  await db.prepare('DELETE FROM fc_used_codes WHERE code = ?').bind(code).run();
+}
+
+/** 清理已无对应文件的占用码（删除中途失败的兜底） */
 export async function cleanupUsedCodes(db: D1Database): Promise<number> {
   const result = await db
-    .prepare(`
-      DELETE FROM fc_used_codes
-      WHERE code NOT IN (
-        SELECT code FROM fc_files
-      )
-    `)
+    .prepare('DELETE FROM fc_used_codes WHERE code NOT IN (SELECT code FROM fc_files)')
     .run();
   return result.meta?.changes ?? 0;
 }
 
-// ---- 分页 ----
+// ===================== 分页与统计 =====================
 
-/**
- * 分页 + 高级筛选（关键词 / 日期范围 / 排序）
- * sort 支持：newest（默认）/ oldest / largest / smallest / mostDownloaded / leastDownloaded
- */
-export async function listFilesAdvanced(
+const SORT_SQL: Record<string, string> = {
+  newest: 'id DESC',
+  oldest: 'id ASC',
+  largest: 'size DESC',
+  smallest: 'size ASC',
+  mostDownloaded: 'download_count DESC',
+  leastDownloaded: 'download_count ASC',
+};
+
+export interface FileFilters {
+  keyword: string;
+  dateFrom: string;
+  dateTo: string;
+  sort: string;
+}
+
+export async function listFiles(
   db: D1Database,
   page: number,
   size: number,
-  keyword: string,
-  dateFrom: string,
-  dateTo: string,
-  sort: string,
+  filters: FileFilters,
 ): Promise<{ files: FileRecord[]; total: number }> {
-  const offset = (page - 1) * size;
-  const kw = keyword.trim();
   const conditions: string[] = [];
-  const bindArgs: (string | number)[] = [];
+  const args: (string | number)[] = [];
 
-  if (kw) {
+  if (filters.keyword.trim()) {
     conditions.push('filename LIKE ?');
-    bindArgs.push(`%${kw}%`);
+    args.push(`%${filters.keyword.trim()}%`);
   }
-  if (dateFrom) {
-    conditions.push("date(created_at) >= ?");
-    bindArgs.push(dateFrom);
+  if (filters.dateFrom) {
+    conditions.push('date(created_at) >= ?');
+    args.push(filters.dateFrom);
   }
-  if (dateTo) {
-    conditions.push("date(created_at) <= ?");
-    bindArgs.push(dateTo);
+  if (filters.dateTo) {
+    conditions.push('date(created_at) <= ?');
+    args.push(filters.dateTo);
   }
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  const sortMap: Record<string, string> = {
-    newest:    'id DESC',
-    oldest:    'id ASC',
-    largest:   'size DESC',
-    smallest:  'size ASC',
-    mostDownloaded: 'download_count DESC',
-    leastDownloaded: 'download_count ASC',
-  };
-  const orderBy = sortMap[sort] ?? 'id DESC';
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const orderBy = SORT_SQL[filters.sort] ?? SORT_SQL.newest;
 
   const [rows, countRow] = await Promise.all([
     db
       .prepare(`SELECT * FROM fc_files ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
-      .bind(...bindArgs, size, offset)
+      .bind(...args, size, (page - 1) * size)
       .all<FileRecord>(),
-    db
-      .prepare(`SELECT COUNT(*) as count FROM fc_files ${where}`)
-      .bind(...bindArgs)
-      .first<{ count: number }>(),
+    db.prepare(`SELECT COUNT(*) as count FROM fc_files ${where}`).bind(...args).first<{ count: number }>(),
   ]);
   return { files: rows.results ?? [], total: countRow?.count ?? 0 };
 }
 
-/** 仪表盘统计 */
-export async function getDashboardStats(db: D1Database): Promise<{
+export interface DashboardStats {
   totalFiles: number;
   totalSize: number;
   todayCount: number;
   todaySize: number;
   yesterdayCount: number;
   yesterdaySize: number;
-}> {
+}
+
+export async function getDashboardStats(db: D1Database): Promise<DashboardStats> {
+  const query = (where: string) =>
+    db
+      .prepare(`SELECT COUNT(*) as count, COALESCE(SUM(size),0) as size FROM fc_files ${where}`)
+      .first<{ count: number; size: number }>();
+
   const [total, today, yesterday] = await Promise.all([
-    db
-      .prepare('SELECT COUNT(*) as count, COALESCE(SUM(size),0) as size FROM fc_files')
-      .first<{ count: number; size: number }>(),
-    db
-      .prepare("SELECT COUNT(*) as count, COALESCE(SUM(size),0) as size FROM fc_files WHERE date(created_at) = date('now')")
-      .first<{ count: number; size: number }>(),
-    db
-      .prepare("SELECT COUNT(*) as count, COALESCE(SUM(size),0) as size FROM fc_files WHERE date(created_at) = date('now', '-1 day')")
-      .first<{ count: number; size: number }>(),
+    query(''),
+    query("WHERE date(created_at) = date('now')"),
+    query("WHERE date(created_at) = date('now', '-1 day')"),
   ]);
   return {
     totalFiles: total?.count ?? 0,
@@ -270,79 +229,64 @@ export async function getDashboardStats(db: D1Database): Promise<{
   };
 }
 
-// ---- 过期清理 ----
+// ===================== 过期清理 =====================
 
-export async function cleanupExpired(
-  db: D1Database,
-  bucket: R2Bucket,
-): Promise<{ expiredCount: number; cleanedCodes: number }> {
-  const expired = await db
+/** 删除过期记录并释放取件码，返回待删除的 R2 key（由调用方批量删对象） */
+export async function takeExpiredFiles(db: D1Database): Promise<FileRecord[]> {
+  const rows = await db
     .prepare("SELECT * FROM fc_files WHERE datetime(expire_at) <= datetime('now')")
     .all<FileRecord>();
-  const files = expired.results ?? [];
-  if (files.length === 0) return { expiredCount: 0, cleanedCodes: 0 };
+  const files = rows.results ?? [];
+  if (!files.length) return files;
 
-  // 批量删除 R2 对象（每批最多 1000 键），避免逐个请求的 RTT
-  const keys = files.map((f) => `file:${f.code}`);
-  for (let i = 0; i < keys.length; i += 1000) {
-    await bucket.delete(keys.slice(i, i + 1000));
-  }
-
-  // 先删记录，再释放取件码（并行执行，释放顺序不影响结果）
   await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
   await Promise.all(files.map((f) => releaseCode(db, f.code)));
-
-  const cleanedCodes = await cleanupUsedCodes(db);
-
-  return { expiredCount: files.length, cleanedCodes };
+  await cleanupUsedCodes(db);
+  return files;
 }
 
-// ---- 设置 ----
+// ===================== 设置 =====================
 
-export async function getSetting(
-  db: D1Database,
-  key: string,
-): Promise<string | null> {
-  const row = await db
-    .prepare('SELECT value FROM fc_settings WHERE key = ?')
-    .bind(key)
-    .first<{ value: string }>();
+export async function getSettings(db: D1Database, keys: string[]): Promise<Record<string, string>> {
+  const placeholders = keys.map(() => '?').join(',');
+  const rows = await db
+    .prepare(`SELECT key, value FROM fc_settings WHERE key IN (${placeholders})`)
+    .bind(...keys)
+    .all<{ key: string; value: string }>();
+  const out: Record<string, string> = {};
+  for (const row of rows.results ?? []) out[row.key] = row.value;
+  return out;
+}
+
+export async function getSetting(db: D1Database, key: string): Promise<string | null> {
+  const row = await db.prepare('SELECT value FROM fc_settings WHERE key = ?').bind(key).first<{ value: string }>();
   return row?.value ?? null;
 }
 
-export async function setSetting(
-  db: D1Database,
-  key: string,
-  value: string,
-): Promise<void> {
-  await db
-    .prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)')
-    .bind(key, value)
-    .run();
+export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
+  await db.prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)').bind(key, value).run();
 }
 
-// ---- 分片上传任务 ----
-
-export interface ChunkUploadTask {
-  upload_id: string;
-  code: string;
-  filename: string;
-  size: number;
-  total_chunks: number;
-  mime_type: string;
-  expire_at: string;
-  max_downloads: number;
-  client_ip: string;
-  created_at: string;
-  updated_at: string;
-}
+// ===================== 分片上传任务 =====================
 
 export async function insertChunkTask(db: D1Database, t: ChunkUploadTask): Promise<void> {
   await db
     .prepare(
       'INSERT INTO fc_chunk_uploads(upload_id, code, filename, size, total_chunks, mime_type, expire_at, max_downloads, client_ip, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     )
-    .bind(t.upload_id, t.code, t.filename, t.size, t.total_chunks, t.mime_type, t.expire_at, t.max_downloads, t.client_ip, t.created_at, t.updated_at)
+    .bind(
+      t.upload_id,
+      t.code,
+      t.filename,
+      t.size,
+      t.total_chunks,
+      t.mime_type,
+      t.expire_at,
+      t.max_downloads,
+      t.client_ip,
+      t.created_at,
+      t.updated_at,
+    )
     .run();
 }
 
@@ -350,7 +294,7 @@ export async function getChunkTask(db: D1Database, uploadId: string): Promise<Ch
   return db.prepare('SELECT * FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).first<ChunkUploadTask>();
 }
 
-/** 分片上传时刷新最后活跃时间，断点续传中的任务不会被超时清理误删 */
+/** 刷活：断点续传中的任务不会被超时回收 */
 export async function touchChunkTask(db: D1Database, uploadId: string): Promise<void> {
   await db
     .prepare('UPDATE fc_chunk_uploads SET updated_at = ? WHERE upload_id = ?')
@@ -358,43 +302,36 @@ export async function touchChunkTask(db: D1Database, uploadId: string): Promise<
     .run();
 }
 
-export async function deleteChunkTask(db: D1Database, uploadId: string): Promise<ChunkUploadTask | null> {
-  const t = await getChunkTask(db, uploadId);
-  if (t) await db.prepare('DELETE FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).run();
-  return t;
+export async function deleteChunkTask(db: D1Database, uploadId: string): Promise<void> {
+  await db.prepare('DELETE FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).run();
 }
 
-/** 清理超过宽限期未活跃的分片上传任务（scheduled 调用），并返回需释放取件码的任务 */
-export async function cleanupChunkTasks(db: D1Database, olderThanMs: number): Promise<ChunkUploadTask[]> {
+/** 取出并删除超过宽限期未活跃的任务（调用方负责清理 R2 分片与释放码） */
+export async function takeStaleChunkTasks(db: D1Database, olderThanMs: number): Promise<ChunkUploadTask[]> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
   const rows = await db
     .prepare('SELECT * FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)')
     .bind(cutoff)
     .all<ChunkUploadTask>();
   const tasks = rows.results ?? [];
-  if (tasks.length > 0) {
-    await db
-      .prepare('DELETE FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)')
-      .bind(cutoff)
-      .run();
-  }
+  if (!tasks.length) return tasks;
+
+  await db.prepare('DELETE FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)').bind(cutoff).run();
   return tasks;
 }
 
-// ---- 速率限制（D1 存储） ----
-
-const RATE_WINDOW = 60_000; // 60 秒窗口
+// ===================== 限流 =====================
 
 /**
- * 检查并记录某类限流计数（登录/上传共用）。返回 true 表示允许继续，false 表示已限流。
- * 关键：无论是否通过，只要窗口未过期都会递增计数，
- *       防止攻击者在窗口重置后获得额外尝试次数。
+ * 滑动窗口限流（登录/上传共用）。无论是否放行都计数，
+ * 防止攻击者在窗口重置后获得额外尝试次数。
  */
 export async function checkRateLimit(
   db: D1Database,
   keyPrefix: string,
   ip: string,
   max: number,
+  windowMs: number,
 ): Promise<boolean> {
   const key = `${keyPrefix}:${ip}`;
   const now = Date.now();
@@ -405,91 +342,56 @@ export async function checkRateLimit(
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as { count: number; windowStart: number };
-      if (now - parsed.windowStart < RATE_WINDOW) {
+      if (now - parsed.windowStart < windowMs) {
         count = parsed.count;
         windowStart = parsed.windowStart;
       }
-    } catch { /* 损坏则重置 */ }
+    } catch {
+      /* 损坏则重置窗口 */
+    }
   }
 
   const newCount = count + 1;
   await setSetting(db, key, JSON.stringify({ count: newCount, windowStart }));
-
   return newCount <= max;
 }
 
-/**
- * 清理已过窗口的限流键，防止 fc_settings 表随访问 IP 无限增长。
- * 由 scheduled 定期调用；损坏记录一并清除。
- */
-export async function cleanupRateLimitEntries(db: D1Database): Promise<number> {
+/** 回收已过窗口的限流键，防止 fc_settings 随访问 IP 无限增长 */
+export async function cleanupRateLimits(db: D1Database, windowMs: number): Promise<number> {
   const rows = await db
-    .prepare(
-      "SELECT key, value FROM fc_settings WHERE key LIKE 'login_ratelimit:%' OR key LIKE 'upload_ratelimit:%'",
-    )
+    .prepare("SELECT key, value FROM fc_settings WHERE key LIKE 'login_ratelimit:%' OR key LIKE 'upload_ratelimit:%'")
     .all<{ key: string; value: string }>();
+
   const now = Date.now();
-  let removed = 0;
-  for (const row of rows.results ?? []) {
+  const stale = (rows.results ?? []).filter((row) => {
     try {
-      const parsed = JSON.parse(row.value) as { windowStart: number };
-      if (now - parsed.windowStart > RATE_WINDOW) {
-        await db.prepare('DELETE FROM fc_settings WHERE key = ?').bind(row.key).run();
-        removed++;
-      }
+      return now - (JSON.parse(row.value) as { windowStart: number }).windowStart > windowMs;
     } catch {
-      await db.prepare('DELETE FROM fc_settings WHERE key = ?').bind(row.key).run();
-      removed++;
+      return true;
     }
+  });
+  for (const row of stale) {
+    await db.prepare('DELETE FROM fc_settings WHERE key = ?').bind(row.key).run();
   }
-  return removed;
+  return stale.length;
 }
 
-// ---- 孤儿 R2 对象清理 ----
+// ===================== 孤儿对象比对 =====================
 
-/**
- * 列出 R2 中所有 file:* 前缀的对象，对比 D1 记录，删除孤儿对象。
- * 每批最多处理 1000 个键（R2 list 上限），超量时保留到下次 scheduled。
- */
-export async function cleanupOrphanedR2Objects(
-  db: D1Database,
-  bucket: R2Bucket,
-): Promise<{ scanned: number; removed: number }> {
-  // cursor 翻页收集全部 file: 对象（4 位码全空间上限约 1 万个 ≈ 11 页），
-  // 只扫首页会永久漏扫字典序靠后的 key
-  const objects: R2Object[] = [];
-  let cursor: string | undefined;
-  do {
-    const listed = await bucket.list({ prefix: 'file:', cursor });
-    objects.push(...listed.objects);
-    cursor = listed.truncated ? listed.cursor : undefined;
-  } while (cursor);
-  const keys = objects.map((o) => o.key);
-  if (keys.length === 0) return { scanned: 0, removed: 0 };
-
-  // 批量查询 D1 中存在的取件码（D1 单条查询绑定变量上限 100）
-  const BATCH = 100;
-  const activeCodes = new Set<string>();
-  for (let i = 0; i < keys.length; i += BATCH) {
-    // R2 key 带 file: 前缀，D1 code 无前缀，查询前必须剥离
-    const batch = keys.slice(i, i + BATCH).map((k) => k.replace('file:', ''));
+/** 给定 R2 现存 key，返回其中在 D1 里不存在的取件码集合 */
+export async function findActiveCodes(db: D1Database, codes: string[]): Promise<Set<string>> {
+  const BATCH = 100; // D1 单语句绑定变量上限
+  const active = new Set<string>();
+  for (let i = 0; i < codes.length; i += BATCH) {
+    const batch = codes.slice(i, i + BATCH);
     const placeholders = batch.map(() => '?').join(',');
     const rows = await db
       .prepare(`SELECT code FROM fc_files WHERE code IN (${placeholders})`)
       .bind(...batch)
       .all<{ code: string }>();
-    for (const row of rows.results ?? []) activeCodes.add(row.code);
+    for (const row of rows.results ?? []) active.add(row.code);
   }
-
-  // 删除孤儿对象（不在 D1 中的）。宽限期 1 小时：上传先写 R2 后写 D1，
-  // 窗口内的正常对象无 D1 记录，过早清理会静默丢数据
-  const GRACE_MS = 3_600_000;
-  const now = Date.now();
-  const orphans = objects
-    .filter((o) => !activeCodes.has(o.key.replace('file:', '')) && now - o.uploaded.getTime() > GRACE_MS)
-    .map((o) => o.key);
-  if (orphans.length === 0) return { scanned: keys.length, removed: 0 };
-
-  await Promise.all(orphans.map((k) => bucket.delete(k)));
-  return { scanned: keys.length, removed: orphans.length };
+  return active;
 }
+
+export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
