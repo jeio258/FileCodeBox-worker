@@ -22,6 +22,7 @@ import { chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, cleanupOrp
 import api from './api';
 import {
   CHUNK_SIZE,
+  HttpError,
   PLAIN_UPLOAD_LIMIT,
   RATE_WINDOW_MS,
   fileKey,
@@ -33,7 +34,7 @@ import {
 import { removeObjects } from './storage';
 import { generateQRCodeGIF } from './qr';
 import { STYLE } from './templates/style';
-import { adminLoginPage, adminPanel, errorPage, filePage, homePage, resultPage, retrievePage } from './templates/pages';
+import { adminLoginPage, adminPanel, errorPage, filePage, homePage, retrievePage } from './templates/pages';
 
 type Ctx = Context<{ Bindings: Env }>;
 
@@ -57,13 +58,39 @@ app.use('*', async (c, next) => {
   );
 });
 
+// ===================== 惰性建表 =====================
+// 首次部署（Cron 尚未触发）时表可能不存在；每个 isolate 用一次轻量探针决定是否建表，
+// 避免"部署后半小时内上传全部 500"。
+let schemaReady = false;
+async function ensureSchema(db: D1Database): Promise<void> {
+  if (schemaReady) return;
+  try {
+    await db.prepare('SELECT 1 FROM fc_settings LIMIT 1').first();
+  } catch {
+    await initDB(db);
+  }
+  schemaReady = true;
+}
+
+app.use('*', async (c, next) => {
+  await ensureSchema(c.env.DB).catch(() => {});
+  await next();
+});
+
 // ===================== 路由包装：统一异常 → 状态码 =====================
+
+// 只有业务错误（HttpError）可对外暴露；未知异常统一掩码并记录，避免泄露内部实现
+const publicError = (e: unknown, fallback: string): string => {
+  if (e instanceof HttpError) return e.message;
+  console.error(JSON.stringify({ event: 'request_error', error: String(e) }));
+  return fallback;
+};
 
 const jsonRoute = (fn: (c: Ctx) => Promise<Response>) => async (c: Ctx) => {
   try {
     return await fn(c);
   } catch (e) {
-    return c.json({ error: messageOf(e, '服务器内部错误') }, statusOf(e) as ContentfulStatusCode);
+    return c.json({ error: publicError(e, '服务器内部错误') }, statusOf(e) as ContentfulStatusCode);
   }
 };
 
@@ -71,7 +98,7 @@ const htmlRoute = (fn: (c: Ctx) => Promise<Response>) => async (c: Ctx) => {
   try {
     return await fn(c);
   } catch (e) {
-    return c.html(errorPage(messageOf(e, '操作失败'), ''), statusOf(e) as ContentfulStatusCode);
+    return c.html(errorPage(publicError(e, '操作失败'), ''), statusOf(e) as ContentfulStatusCode);
   }
 };
 
@@ -126,11 +153,12 @@ app.get('/r/:code', async (c) => {
 
 app.post('/api/upload', jsonRoute(async (c) => c.json(await uploadFile(c, c.env))));
 
+// 文本上传：成功后 303 到取件页（PRG，避免刷新重复提交）
 app.post(
   '/api/upload/text',
   htmlRoute(async (c) => {
     const result = await uploadText(c, c.env);
-    return c.html(resultPage(result.code, result.title, result.size, baseUrl(c)));
+    return c.redirect(`/r/${result.code}`, 303);
   }),
 );
 
@@ -221,11 +249,13 @@ app.get('/admin', async (c) => {
 app.post('/admin/login', async (c) => {
   const body = await c.req.parseBody();
   const result = await handleAdminLogin(c, c.env, typeof body['password'] === 'string' ? body['password'] : '');
-  return result.success ? c.redirect('/admin') : c.html(adminLoginPage(result.error));
+  return result.success
+    ? c.redirect('/admin')
+    : c.html(adminLoginPage(result.error), result.status as ContentfulStatusCode);
 });
 
-// GET 链接直接登出，同时清 DB token
-app.get('/admin/logout', async (c) => {
+// 登出：页面链接用 GET，API 客户端可用 POST；同时清 DB token
+app.on(['GET', 'POST'], '/admin/logout', async (c) => {
   await handleAdminLogout(c, c.env);
   return c.redirect('/');
 });

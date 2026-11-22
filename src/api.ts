@@ -8,7 +8,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from './types';
-import { formatFileSize, messageOf, statusOf } from './utils';
+import { HttpError, formatFileSize, statusOf } from './utils';
 import { configToApi, getConfig, updateConfig } from './config';
 import { getDashboardStats, getFileById, listFiles } from './db';
 import { adminAuth, changeAdminPassword, handleAdminLogin } from './auth';
@@ -21,9 +21,13 @@ type Ctx = Context<{ Bindings: Env }>;
 
 const ok = (c: Ctx, detail: unknown, msg = 'success') => c.json({ code: 200, msg, detail });
 
-/** 业务异常统一转成兼容格式 */
-const fail = (c: Ctx, e: unknown, fallbackMsg = '服务器内部错误') =>
-  c.json({ code: statusOf(e), msg: messageOf(e, fallbackMsg) }, statusOf(e) as ContentfulStatusCode);
+/** 业务异常转兼容格式；未知异常掩码并记录，避免泄露内部错误 */
+const fail = (c: Ctx, e: unknown, fallbackMsg = '服务器内部错误') => {
+  const status = statusOf(e);
+  if (!(e instanceof HttpError)) console.error(JSON.stringify({ event: 'api_error', error: String(e) }));
+  const msg = e instanceof HttpError ? e.message : fallbackMsg;
+  return c.json({ code: status, msg }, status as ContentfulStatusCode);
+};
 
 const failWith = (c: Ctx, status: number, msg: string) =>
   c.json({ code: status, msg }, status as ContentfulStatusCode);
@@ -45,7 +49,7 @@ api.post('/admin/login', async (c) => {
   if (!password) return failWith(c, 422, '密码不能为空');
 
   const result = await handleAdminLogin(c, c.env, password);
-  if (!result.success) return failWith(c, 401, result.error);
+  if (!result.success) return failWith(c, result.status, result.error);
   return ok(c, { token: result.token, token_type: 'Bearer' });
 });
 

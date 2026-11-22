@@ -259,19 +259,6 @@ export function retrievePage(code?: string): string {
   return layout('取件', content);
 }
 
-// ===================== 上传成功页 =====================
-
-export function resultPage(code: string, filename: string, size: number, baseUrl: string): string {
-  const left = `
-        ${pageHeader('上传成功')}
-        <div class="share-title">${escapeHtml(filename)}</div>
-        <div class="command-box center-box">
-          ${metaRow(formatFileSize(size))}
-          <a href="/" class="btn btn-secondary btn-inline">继续上传</a>
-        </div>`;
-  return layout('上传成功', shareGrid(left, code, `${baseUrl}/r/${code}`), true, true);
-}
-
 // ===================== 文件 / 文本取件页 =====================
 
 export function filePage(file: FileRecord, baseUrl: string): string {

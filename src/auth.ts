@@ -39,7 +39,8 @@ async function resolvePasswordHash(env: Env): Promise<{ hash: string; source: 's
     }
     return { hash: cachedSecretHash.hash, source: 'secret' };
   }
-  const stored = await getSetting(env.DB, CONFIG_KEYS.passwordHash);
+  // D1 异常不应让登录变成 500：按"未配置密码"处理并给出明确提示
+  const stored = await getSetting(env.DB, CONFIG_KEYS.passwordHash).catch(() => null);
   return stored ? { hash: stored, source: 'db' } : null;
 }
 
@@ -67,17 +68,17 @@ export async function handleAdminLogin(
   c: Context<{ Bindings: Env }>,
   env: Env,
   inputPassword: string,
-): Promise<{ success: true; token: string } | { success: false; error: string }> {
+): Promise<{ success: true; token: string } | { success: false; error: string; status: 401 | 429 }> {
   const resolved = await resolvePasswordHash(env);
-  if (!resolved) return { success: false, error: NO_PASSWORD_HINT };
+  if (!resolved) return { success: false, error: NO_PASSWORD_HINT, status: 401 };
 
   const ip = getClientIp(c.req.raw.headers) || 'unknown';
   if (!(await checkRateLimit(env.DB, 'login_ratelimit', ip, LOGIN_RATE_MAX, RATE_WINDOW_MS))) {
-    return { success: false, error: '尝试次数过多，请稍后再试' };
+    return { success: false, error: '尝试次数过多，请稍后再试', status: 429 };
   }
 
   if (!timingSafeCompare(await hashPassword(inputPassword), resolved.hash)) {
-    return { success: false, error: '密码错误' };
+    return { success: false, error: '密码错误', status: 401 };
   }
 
   const token = crypto.randomUUID();
