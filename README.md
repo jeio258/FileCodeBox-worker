@@ -260,8 +260,19 @@ curl -X PATCH "https://你的域名/admin/config/update" \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ADMIN_PASSWORD` | - | 管理员密码（**Secret**，`wrangler secret put` 设置） |
-| `MAX_FILE_SIZE` | `314572800` | 最大文件大小 (300MB，可在管理面板覆盖) |
-| `DEFAULT_EXPIRE_DAYS` | `7` | 默认过期天数 |
+| `MAX_FILE_SIZE` | `314572800` | 最大文件大小缺省值（300MB） |
+| `DEFAULT_EXPIRE_DAYS` | `7` | 默认过期天数缺省值 |
+
+### 配置优先级（重要）
+
+```
+D1 fc_settings（管理端可改，部署不丢）  >  env / wrangler.jsonc（缺值兜底）  >  内置默认
+```
+
+- `wrangler deploy` **会以 `wrangler.jsonc` 为唯一来源覆盖普通变量**，控制台手动添加的明文变量会被清除；只有 `wrangler secret put` 的 Secret 不受影响。
+- 因此：`ADMIN_PASSWORD` 用 Secret；最大文件大小 / 默认过期天数 / 游客开关用管理端 API（存 D1），部署不会回退。
+- 密码兜底：Secret 缺失时使用 D1 中 `admin_password_hash`（`POST /api/admin/password` 写入），避免部署后无法登录。
+- 部署后访问 `GET /api/status` 可立即确认 `adminPasswordConfigured` 与生效配置。
 
 ## 📁 项目结构
 

@@ -9,9 +9,9 @@ import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from './types';
 import { formatFileSize, messageOf, statusOf } from './utils';
-import { getConfig } from './config';
-import { getDashboardStats, getFileById, listFiles, setSetting } from './db';
-import { adminAuth, handleAdminLogin } from './auth';
+import { configToApi, getConfig, updateConfig } from './config';
+import { getDashboardStats, getFileById, listFiles } from './db';
+import { adminAuth, changeAdminPassword, handleAdminLogin } from './auth';
 import { buildDownloadResponse, deleteStoredFile, lookupFile } from './files';
 import { uploadFile, uploadText } from './upload';
 
@@ -162,30 +162,24 @@ adminApi.delete('/file/delete', async (c) => {
   return ok(c, { id });
 });
 
-async function readConfig(c: Ctx) {
-  const config = await getConfig(c.env);
-  return {
-    openUpload: config.openUpload ? '1' : '0',
-    maxFileSize: String(config.maxSize),
-    defaultExpireDays: String(config.defaultExpireDays),
-  };
-}
-
-adminApi.get('/config/get', async (c) => ok(c, await readConfig(c)));
+adminApi.get('/config/get', async (c) => ok(c, configToApi(await getConfig(c.env))));
 
 adminApi.patch('/config/update', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
   if (!body) return failWith(c, 422, '请求体不能为空');
+  return ok(c, configToApi(await updateConfig(c.env, body)));
+});
 
-  const mapping: Record<string, string> = {
-    openUpload: 'open_upload',
-    maxFileSize: 'max_file_size',
-    defaultExpireDays: 'default_expire_days',
-  };
-  for (const [field, key] of Object.entries(mapping)) {
-    if (body[field] !== undefined) await setSetting(c.env.DB, key, String(body[field]));
+// 修改密码：写入 D1（部署不清除），并轮换会话
+adminApi.post('/password', async (c) => {
+  const body = await c.req.json<{ current_password?: string; new_password?: string }>().catch(() => null);
+  if (!body) return failWith(c, 422, '请求体不能为空');
+  try {
+    await changeAdminPassword(c, c.env, body.current_password ?? '', body.new_password ?? '');
+    return ok(c, { changed: true });
+  } catch (e) {
+    return fail(c, e);
   }
-  return ok(c, await readConfig(c));
 });
 
 api.route('/admin', adminApi);

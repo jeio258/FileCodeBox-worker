@@ -28,6 +28,15 @@ export async function initDB(db: D1Database): Promise<void> {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS fc_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS fc_rate_limits (
+      key TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      window_start INTEGER NOT NULL
+    )`,
     `CREATE TABLE IF NOT EXISTS fc_chunk_uploads (
       upload_id TEXT PRIMARY KEY,
       code TEXT NOT NULL,
@@ -49,6 +58,11 @@ export async function initDB(db: D1Database): Promise<void> {
   const migrate = (sql: string) => db.prepare(sql).run().catch(() => {});
   await migrate('ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0');
   await migrate("ALTER TABLE fc_chunk_uploads ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+  // 旧布局迁移：会话 token 移出配置表；旧格式限流键迁入 fc_rate_limits 后删除
+  await migrate("INSERT OR IGNORE INTO fc_state(key, value) SELECT 'admin_token', value FROM fc_settings WHERE key = 'admin_token'");
+  await migrate("DELETE FROM fc_settings WHERE key = 'admin_token'");
+  await migrate("INSERT OR IGNORE INTO fc_rate_limits(key, count, window_start) SELECT key, 1, CAST(json_extract(value, '$.windowStart') AS INTEGER) FROM fc_settings WHERE key LIKE '%ratelimit:%'");
+  await migrate("DELETE FROM fc_settings WHERE key LIKE 'login_ratelimit:%' OR key LIKE 'upload_ratelimit:%'");
 }
 
 // ===================== 文件 =====================
@@ -247,7 +261,7 @@ export async function takeExpiredFiles(db: D1Database): Promise<FileRecord[]> {
   return files;
 }
 
-// ===================== 设置 =====================
+// ===================== 设置（管理员可编辑配置） =====================
 
 export async function getSettings(db: D1Database, keys: string[]): Promise<Record<string, string>> {
   const placeholders = keys.map(() => '?').join(',');
@@ -267,6 +281,17 @@ export async function getSetting(db: D1Database, key: string): Promise<string | 
 
 export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
   await db.prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)').bind(key, value).run();
+}
+
+// ===================== 会话状态 =====================
+
+export async function getState(db: D1Database, key: string): Promise<string | null> {
+  const row = await db.prepare('SELECT value FROM fc_state WHERE key = ?').bind(key).first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+export async function setState(db: D1Database, key: string, value: string): Promise<void> {
+  await db.prepare('INSERT OR REPLACE INTO fc_state(key, value) VALUES(?, ?)').bind(key, value).run();
 }
 
 // ===================== 分片上传任务 =====================
@@ -325,8 +350,8 @@ export async function takeStaleChunkTasks(db: D1Database, olderThanMs: number): 
 // ===================== 限流 =====================
 
 /**
- * 滑动窗口限流（登录/上传共用）。无论是否放行都计数，
- * 防止攻击者在窗口重置后获得额外尝试次数。
+ * 固定窗口限流：单条 UPSERT 原子完成"窗口重置或计数+1"，避免 get-then-set 的
+ * 两步竞态与两次往返；无论是否放行都计数，防止窗口重置后获得额外尝试。
  */
 export async function checkRateLimit(
   db: D1Database,
@@ -335,47 +360,27 @@ export async function checkRateLimit(
   max: number,
   windowMs: number,
 ): Promise<boolean> {
-  const key = `${keyPrefix}:${ip}`;
   const now = Date.now();
-  const raw = await getSetting(db, key);
-
-  let count = 0;
-  let windowStart = now;
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as { count: number; windowStart: number };
-      if (now - parsed.windowStart < windowMs) {
-        count = parsed.count;
-        windowStart = parsed.windowStart;
-      }
-    } catch {
-      /* 损坏则重置窗口 */
-    }
-  }
-
-  const newCount = count + 1;
-  await setSetting(db, key, JSON.stringify({ count: newCount, windowStart }));
-  return newCount <= max;
+  const row = await db
+    .prepare(
+      `INSERT INTO fc_rate_limits(key, count, window_start) VALUES(?1, 1, ?2)
+       ON CONFLICT(key) DO UPDATE SET
+         count = CASE WHEN ?2 - window_start >= ?3 THEN 1 ELSE count + 1 END,
+         window_start = CASE WHEN ?2 - window_start >= ?3 THEN ?2 ELSE window_start END
+       RETURNING count`,
+    )
+    .bind(`${keyPrefix}:${ip}`, now, windowMs)
+    .first<{ count: number }>();
+  return (row?.count ?? 1) <= max;
 }
 
-/** 回收已过窗口的限流键，防止 fc_settings 随访问 IP 无限增长 */
+/** 单条 SQL 回收过期窗口，无需逐行 JSON 解析 */
 export async function cleanupRateLimits(db: D1Database, windowMs: number): Promise<number> {
-  const rows = await db
-    .prepare("SELECT key, value FROM fc_settings WHERE key LIKE 'login_ratelimit:%' OR key LIKE 'upload_ratelimit:%'")
-    .all<{ key: string; value: string }>();
-
-  const now = Date.now();
-  const stale = (rows.results ?? []).filter((row) => {
-    try {
-      return now - (JSON.parse(row.value) as { windowStart: number }).windowStart > windowMs;
-    } catch {
-      return true;
-    }
-  });
-  for (const row of stale) {
-    await db.prepare('DELETE FROM fc_settings WHERE key = ?').bind(row.key).run();
-  }
-  return stale.length;
+  const result = await db
+    .prepare('DELETE FROM fc_rate_limits WHERE window_start < ?')
+    .bind(Date.now() - windowMs)
+    .run();
+  return result.meta?.changes ?? 0;
 }
 
 // ===================== 孤儿对象比对 =====================

@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "npm run preflight && wrangler deploy",
     "test": "node test-headless.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "preflight": "node scripts/preflight.mjs"
   },
   "dependencies": {
     "hono": "^4.13.7",

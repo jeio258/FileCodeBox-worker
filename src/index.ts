@@ -10,7 +10,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from './types';
 import { getConfig } from './config';
 import { initDB, getFileByCode, getFileById, listFiles, takeExpiredFiles, cleanupRateLimits } from './db';
-import { adminAuth, handleAdminLogin, handleAdminLogout } from './auth';
+import { adminAuth, adminPasswordConfigured, handleAdminLogin, handleAdminLogout } from './auth';
 import {
   buildDownloadResponse,
   cleanupOrphanObjects,
@@ -20,7 +20,7 @@ import {
 } from './files';
 import { chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, cleanupOrphanCodes, cleanupStaleChunks, uploadFile, uploadText } from './upload';
 import api from './api';
-import { getBaseUrl, messageOf, statusOf, PLAIN_UPLOAD_LIMIT, RATE_WINDOW_MS, fileKey } from './utils';
+import { CHUNK_SIZE, getBaseUrl, messageOf, statusOf, PLAIN_UPLOAD_LIMIT, RATE_WINDOW_MS, fileKey } from './utils';
 import { removeObjects } from './storage';
 import { generateQRCodeGIF } from './qr';
 import { STYLE } from './templates/style';
@@ -250,6 +250,24 @@ app.get(
     if (!(await adminAuth(c, c.env))) return c.json({ error: 'unauthorized' }, 401);
     await initDB(c.env.DB);
     return c.json({ ok: true });
+  }),
+);
+
+// ===================== 运行状态（公开，仅暴露非敏感配置与自检结果） =====================
+
+app.get(
+  '/api/status',
+  jsonRoute(async (c) => {
+    const config = await getConfig(c.env);
+    return c.json({
+      ok: true,
+      // 部署后 Secret 被清空时会变 false，便于立即发现
+      adminPasswordConfigured: await adminPasswordConfigured(c.env),
+      maxFileSize: config.maxSize,
+      defaultExpireDays: config.defaultExpireDays,
+      openUpload: config.openUpload,
+      chunkSize: CHUNK_SIZE,
+    });
   }),
 );
 

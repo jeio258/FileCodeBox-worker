@@ -1,39 +1,90 @@
-/** 运行时配置与过期策略：env 为默认值，D1 设置可覆盖（管理面板写入即生效）。 */
+/**
+ * 配置唯一入口。
+ *
+ * 优先级：D1 fc_settings（管理员可编辑，部署不丢） > env（wrangler.jsonc，缺值时兜底）
+ *        > 内置默认。getConfig 不再写入，只在管理端更新时写 D1。
+ * 读 D1 失败时整体降级到 env/默认，避免首页与上传因数据库抖动不可用。
+ */
 
 import type { Env, ExpireInput, RuntimeConfig } from './types';
-import { getSettings } from './db';
+import { getSettings, setSetting } from './db';
 import { DEFAULT_EXPIRE_DAYS, DEFAULT_MAX_SIZE } from './utils';
+
+export const CONFIG_KEYS = {
+  maxSize: 'max_file_size',
+  defaultExpireDays: 'default_expire_days',
+  openUpload: 'open_upload',
+  /** D1 侧密码哈希：Secret 缺失时兜底，保证部署后仍可登录 */
+  passwordHash: 'admin_password_hash',
+} as const;
+
+export const MAX_SIZE_LIMIT = 1024 * 1024 * 1024; // 1GB 上限，防误配
 
 const toInt = (v: unknown, fallback: number): number => {
   const n = typeof v === 'number' ? v : parseInt(String(v ?? ''), 10);
   return Number.isFinite(n) ? n : fallback;
 };
 
-const toPositive = (v: unknown, fallback: number): number => {
+const clampSize = (v: unknown, fallback: number): number => {
   const n = toInt(v, fallback);
-  return n > 0 ? n : fallback;
+  if (n < 1) return fallback;
+  return Math.min(n, MAX_SIZE_LIMIT);
 };
 
-/** 单次查询合并三项配置，避免每个请求多次读表 */
+const clampDays = (v: unknown, fallback: number): number => {
+  const n = toInt(v, fallback);
+  if (n < 1) return fallback;
+  return Math.min(n, 3650);
+};
+
+/** 三项配置一次查询；失败时回退 env/内置默认 */
 export async function getConfig(env: Env): Promise<RuntimeConfig> {
-  // 读设置失败时降级到 env 默认：避免首页/上传因 D1 抖动整体不可用
-  const settings = await getSettings(env.DB, ['open_upload', 'max_file_size', 'default_expire_days']).catch(
-    () => ({}) as Record<string, string>,
-  );
+  const settings = await getSettings(
+    env.DB,
+    [CONFIG_KEYS.maxSize, CONFIG_KEYS.defaultExpireDays, CONFIG_KEYS.openUpload],
+  ).catch(() => ({}) as Record<string, string>);
+
   return {
-    maxSize: toPositive(settings.max_file_size, toPositive(env.MAX_FILE_SIZE, DEFAULT_MAX_SIZE)),
-    defaultExpireDays: toPositive(
-      settings.default_expire_days,
-      toPositive(env.DEFAULT_EXPIRE_DAYS, DEFAULT_EXPIRE_DAYS),
+    maxSize: clampSize(settings[CONFIG_KEYS.maxSize], clampSize(env.MAX_FILE_SIZE, DEFAULT_MAX_SIZE)),
+    defaultExpireDays: clampDays(
+      settings[CONFIG_KEYS.defaultExpireDays],
+      clampDays(env.DEFAULT_EXPIRE_DAYS, DEFAULT_EXPIRE_DAYS),
     ),
-    openUpload: (settings.open_upload ?? '1') !== '0',
+    openUpload: (settings[CONFIG_KEYS.openUpload] ?? '1') !== '0',
   };
 }
 
-/**
- * 过期参数统一入口：query / form / JSON 三种来源都先过这里，
- * 避免各处重复写字段别名与类型校验。
- */
+/** 管理端更新：字段名到存储键的唯一映射处，含范围校验 */
+export async function updateConfig(env: Env, patch: Record<string, unknown>): Promise<RuntimeConfig> {
+  const current = await getConfig(env);
+  const writes: Promise<void>[] = [];
+
+  if (patch.maxFileSize !== undefined) {
+    writes.push(setSetting(env.DB, CONFIG_KEYS.maxSize, String(clampSize(patch.maxFileSize, current.maxSize))));
+  }
+  if (patch.defaultExpireDays !== undefined) {
+    writes.push(
+      setSetting(env.DB, CONFIG_KEYS.defaultExpireDays, String(clampDays(patch.defaultExpireDays, current.defaultExpireDays))),
+    );
+  }
+  if (patch.openUpload !== undefined) {
+    const open = patch.openUpload === true || patch.openUpload === '1' || patch.openUpload === 'true';
+    writes.push(setSetting(env.DB, CONFIG_KEYS.openUpload, open ? '1' : '0'));
+  }
+  await Promise.all(writes);
+  return getConfig(env);
+}
+
+/** 兼容 API 的字符串化输出（与历史字段保持一致） */
+export function configToApi(config: RuntimeConfig) {
+  return {
+    openUpload: config.openUpload ? '1' : '0',
+    maxFileSize: String(config.maxSize),
+    defaultExpireDays: String(config.defaultExpireDays),
+  };
+}
+
+/** 过期参数统一入口：query / form / JSON 三种来源都先过这里 */
 export function expireInput(src: Record<string, unknown>): ExpireInput {
   const numOrStr = (key: string) => {
     const v = src[key];
