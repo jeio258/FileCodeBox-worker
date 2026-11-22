@@ -6,7 +6,7 @@
 
 ## ✨ 功能
 
-- 📤 **上传文件** — 获取 4 位纯数字取件码，存入 R2 对象存储（最大 100MB）
+- 📤 **上传文件** — 获取 4 位纯数字取件码，存入 R2（普通上传 ≤ 平台单请求上限，>100MB 自动分片上传，最高 300MB）
 - 📝 **文本分享** — 粘贴文本即可生成分享链接，页面内直接查看
 - 📥 **取件下载** — 输入取件码下载文件或查看文本
 - 🔐 **管理面板** — 查看/删除/清理文件，登录速率限制
@@ -74,7 +74,7 @@ wrangler d1 create filecodebox-db
     { "binding": "DB", "database_name": "filecodebox-db", "database_id": "你的D1_ID" }
   ],
   "vars": {
-    "MAX_FILE_SIZE": "104857600",
+    "MAX_FILE_SIZE": "314572800",
     "DEFAULT_EXPIRE_DAYS": "7"
   }
 }
@@ -93,7 +93,8 @@ wrangler secret put ADMIN_PASSWORD
 npm run deploy
 ```
 
-首次部署后访问 `/api/init` 初始化数据库表。
+表结构由 Cron（每 30 分钟）幂等初始化，首次部署后无需手动建表；也可用管理员身份访问 `/api/init`。
+部署后访问 `/api/status` 确认生效配置与 `adminPasswordConfigured`。
 
 ---
 
@@ -132,9 +133,9 @@ npm run deploy
 
 绑定资源后，在 Pages 项目页面点击 **重新部署**（或推送新 commit 自动触发）。
 
-#### 5. 初始化数据库
+#### 5. 确认状态
 
-部署成功后，访问 `https://你的域名/api/init` 初始化数据库表，返回 `{"ok":true}` 即成功。
+部署完成后访问 `https://你的域名/api/status`：`ok: true` 且 `adminPasswordConfigured: true` 即就绪（表结构由 Cron 幂等创建，无需手动初始化）。
 
 ---
 
@@ -212,7 +213,7 @@ curl "https://你的域名/admin/config/get" \
 curl -X PATCH "https://你的域名/admin/config/update" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"openUpload":"1","maxFileSize":"104857600","defaultExpireDays":"7"}'
+  -d '{"openUpload":"1","maxFileSize":"314572800","defaultExpireDays":"7"}'
 ```
 
 ---
@@ -223,19 +224,25 @@ curl -X PATCH "https://你的域名/admin/config/update" \
 |------|------|------|
 | GET | `/` | 首页（上传 + 取件）|
 | GET | `/r/:code` | 取件页（文件详情/文本查看）|
+| GET | `/api/status` | 运行状态（公开：生效配置 + 密码是否就绪）|
 | POST | `/api/upload` | 文件上传（XHR，返回 JSON `{code, filename, size}`）|
 | POST | `/api/upload/text` | 文本上传（表单，返回 HTML 结果页）|
+| POST | `/api/upload/chunk/init` | 分片上传初始化（JSON）|
+| PUT | `/api/upload/chunk/:upload_id/:index` | 上传单个分片（原始字节）|
+| GET | `/api/upload/chunk/status/:upload_id` | 已上传分片（断点续传）|
+| POST | `/api/upload/chunk/complete/:upload_id` | 合并分片并返回取件码 |
+| POST | `/api/upload/chunk/abort/:upload_id` | 取消并释放取件码 |
 | GET | `/api/text/:code` | 获取文本内容 |
 | GET | `/api/download/:code` | 下载文件（带 Content-Disposition）|
 | GET | `/api/info/:code` | 文件信息（JSON）|
 | GET | `/admin` | 管理面板（受保护）|
-| POST | `/api/admin/login` | 管理员登录（表单，302 重定向）|
-| GET | `/api/admin/logout` | 管理员登出 |
-| POST | `/api/admin/delete/:id` | 删除文件（表单）|
-| POST | `/api/admin/cleanup` | 手动清理过期文件 |
-| GET | `/api/init` | 初始化数据库表 |
+| POST | `/admin/login` | 浏览器登录（表单，302 重定向）|
+| GET | `/admin/logout` | 登出并清除会话 |
+| POST | `/admin/delete/:id` | 删除文件（表单）|
+| POST | `/admin/cleanup` | 手动清理过期文件 |
+| GET | `/api/init` | 初始化数据库表（需管理员）|
 
-> **注意**：`/api/admin/login`（表单）与 `/admin/login`（JSON API）是两套不同的登录入口，分别用于浏览器页面和程序调用。
+> **注意**：浏览器登录走 `POST /admin/login`（表单），程序调用走 `POST /api/admin/login`（JSON，返回 Bearer token）；两者共享同一密码与限流。
 
 ---
 

@@ -18,7 +18,7 @@ export const CONFIG_KEYS = {
   passwordHash: 'admin_password_hash',
 } as const;
 
-export const MAX_SIZE_LIMIT = 1024 * 1024 * 1024; // 1GB 上限，防误配
+const MAX_SIZE_LIMIT = 1024 * 1024 * 1024; // 1GB 上限，防误配
 
 const toInt = (v: unknown, fallback: number): number => {
   const n = typeof v === 'number' ? v : parseInt(String(v ?? ''), 10);

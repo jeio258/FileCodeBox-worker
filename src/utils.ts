@@ -23,6 +23,7 @@ export const FILE_PREFIX = 'file:';
 export const fileKey = (code: string) => `${FILE_PREFIX}${code}`;
 export const chunkKey = (uploadId: string, index: number) => `chunk:${uploadId}:${index}`;
 export const chunkPrefix = (uploadId: string) => `chunk:${uploadId}:`;
+export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
 
 // ===================== HTTP 错误 =====================
 

@@ -4,7 +4,7 @@
  */
 
 import type { Context } from 'hono';
-import type { ChunkUploadTask, Env } from './types';
+import type { ChunkUploadTask, Env, RuntimeConfig } from './types';
 import { expireInput, getConfig, resolveExpire } from './config';
 import { assertUploadAllowed } from './auth';
 import {
@@ -61,6 +61,14 @@ export interface TextResult {
 
 // ===================== 共用步骤 =====================
 
+/** 上传入口共用前置：取配置 → 游客门控 → 限流 */
+async function prepareUpload(c: Ctx, env: Env): Promise<RuntimeConfig> {
+  const config = await getConfig(env);
+  await assertUploadAllowed(c, config);
+  await assertUploadRate(c, env);
+  return config;
+}
+
 async function assertUploadRate(c: Ctx, env: Env): Promise<void> {
   const ip = getClientIp(c.req.raw.headers);
   if (!(await checkRateLimit(env.DB, 'upload_ratelimit', ip, UPLOAD_RATE_MAX, RATE_WINDOW_MS))) {
@@ -116,9 +124,7 @@ async function writeStream(
 // ===================== 普通上传 =====================
 
 export async function uploadFile(c: Ctx, env: Env): Promise<UploadResult> {
-  const config = await getConfig(env);
-  await assertUploadAllowed(c, config);
-  await assertUploadRate(c, env);
+  const config = await prepareUpload(c, env);
 
   const q = c.req.query();
   const expire = resolveExpire(expireInput(q), config);
@@ -157,9 +163,7 @@ export async function uploadFile(c: Ctx, env: Env): Promise<UploadResult> {
 // ===================== 文本分享 =====================
 
 export async function uploadText(c: Ctx, env: Env): Promise<TextResult> {
-  const config = await getConfig(env);
-  await assertUploadAllowed(c, config);
-  await assertUploadRate(c, env);
+  const config = await prepareUpload(c, env);
 
   const body = await c.req.parseBody();
   const text = typeof body['text'] === 'string' ? body['text'] : '';
@@ -204,9 +208,7 @@ export interface ChunkInitResult {
 }
 
 export async function chunkInit(c: Ctx, env: Env): Promise<ChunkInitResult> {
-  const config = await getConfig(env);
-  await assertUploadAllowed(c, config);
-  await assertUploadRate(c, env);
+  const config = await prepareUpload(c, env);
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
   if (!body) throw new HttpError(422, '请求体不能为空');

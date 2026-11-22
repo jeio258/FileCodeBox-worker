@@ -20,7 +20,16 @@ import {
 } from './files';
 import { chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, cleanupOrphanCodes, cleanupStaleChunks, uploadFile, uploadText } from './upload';
 import api from './api';
-import { CHUNK_SIZE, getBaseUrl, messageOf, statusOf, PLAIN_UPLOAD_LIMIT, RATE_WINDOW_MS, fileKey } from './utils';
+import {
+  CHUNK_SIZE,
+  PLAIN_UPLOAD_LIMIT,
+  RATE_WINDOW_MS,
+  fileKey,
+  getBaseUrl,
+  isValidCode,
+  messageOf,
+  statusOf,
+} from './utils';
 import { removeObjects } from './storage';
 import { generateQRCodeGIF } from './qr';
 import { STYLE } from './templates/style';
@@ -67,6 +76,7 @@ const htmlRoute = (fn: (c: Ctx) => Promise<Response>) => async (c: Ctx) => {
 };
 
 const baseUrl = (c: Ctx) => getBaseUrl(new URL(c.req.url).origin, c.req.header('host'));
+const param = (c: Ctx, name: string) => (c.req.param(name) ?? '').trim();
 
 // ===================== 静态资源 =====================
 
@@ -106,7 +116,7 @@ app.get('/r', (c) => {
 
 app.get('/r/:code', async (c) => {
   noStore(c);
-  const code = (c.req.param('code') ?? '').trim();
+  const code = param(c, 'code');
   const file = await getFileByCode(c.env.DB, code);
   if (!file) return c.html(retrievePage(code));
   return c.html(filePage(file, baseUrl(c)));
@@ -136,7 +146,7 @@ app.post('/api/upload/chunk/abort/:upload_id', jsonRoute(async (c) => c.json(awa
 app.get(
   '/api/text/:code',
   jsonRoute(async (c) => {
-    const lookup = await lookupText(c.env, (c.req.param('code') ?? '').trim(), {
+    const lookup = await lookupText(c.env, param(c, 'code'), {
       count: true,
       isHead: c.req.method === 'HEAD',
     });
@@ -149,9 +159,8 @@ app.get(
 app.get(
   '/api/download/:code',
   async (c) => {
-    const code = (c.req.param('code') ?? '').trim();
     try {
-      const lookup = await lookupFile(c.env, code, { count: true, isHead: c.req.method === 'HEAD' });
+      const lookup = await lookupFile(c.env, param(c, 'code'), { count: true, isHead: c.req.method === 'HEAD' });
       if (lookup.status === 'notFound') return c.html(errorPage('文件不存在', '该文件可能已被清理'), 404);
       if (lookup.status === 'maxExceeded') return c.html(errorPage('已达最大下载次数', '该文件的下载次数已用完'), 403);
       return buildDownloadResponse(lookup.file, lookup.obj, c.req.method === 'HEAD');
@@ -164,7 +173,7 @@ app.get(
 app.get(
   '/api/info/:code',
   jsonRoute(async (c) => {
-    const file = await getFileByCode(c.env.DB, (c.req.param('code') ?? '').trim());
+    const file = await getFileByCode(c.env.DB, param(c, 'code'));
     if (!file) return c.json({ error: 'not found' }, 404);
     return c.json({
       filename: file.filename,
@@ -177,8 +186,8 @@ app.get(
 );
 
 app.get('/qrcode/:code', async (c) => {
-  const code = (c.req.param('code') ?? '').trim();
-  if (!/^\d{4}$/.test(code)) return c.text('Invalid code', 400);
+  const code = param(c, 'code');
+  if (!isValidCode(code)) return c.text('Invalid code', 400);
   if (!(await getFileByCode(c.env.DB, code))) return c.text('File not found', 404);
 
   const gif = generateQRCodeGIF(`${baseUrl(c)}/r/${code}`, 200);
@@ -208,9 +217,6 @@ app.get('/admin', async (c) => {
   return c.html(adminPanel(files, total, page, filters));
 });
 
-// 兼容旧路径
-app.get('/console', (c) => c.redirect('/admin'));
-
 // Web 表单登录（HTML）；JSON 登录见 /api/admin/login
 app.post('/admin/login', async (c) => {
   const body = await c.req.parseBody();
@@ -223,8 +229,6 @@ app.get('/admin/logout', async (c) => {
   await handleAdminLogout(c, c.env);
   return c.redirect('/');
 });
-
-app.get('/api/console/logout', (c) => c.redirect('/admin/logout'));
 
 app.post('/admin/delete/:id', async (c) => {
   if (!(await adminAuth(c, c.env))) return c.redirect('/admin');

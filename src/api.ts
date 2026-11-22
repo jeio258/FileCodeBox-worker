@@ -70,11 +70,12 @@ const shareFileHandler = async (c: Ctx) => {
 };
 register('post', '/share/file', shareFileHandler);
 
+const codeQuery = (c: Ctx) => (c.req.query('code') ?? c.req.query('key') ?? '').trim();
+
 // ---- 取件信息（GET 计入次数，POST 只查询） ----
 async function selectHandler(c: Ctx, count: boolean) {
-  const code = (c.req.query('code') ?? c.req.query('key') ?? '').trim();
   try {
-    const lookup = await lookupFile(c.env, code, { count, isHead: false });
+    const lookup = await lookupFile(c.env, codeQuery(c), { count, isHead: false });
     if (lookup.status === 'notFound') return failWith(c, 404, '文件不存在或已过期');
     if (lookup.status === 'maxExceeded') return failWith(c, 403, '已达最大下载次数');
 
@@ -95,9 +96,8 @@ register('post', '/share/select', (c) => selectHandler(c, false));
 
 // ---- 下载 ----
 const downloadHandler = async (c: Ctx) => {
-  const code = (c.req.query('code') ?? c.req.query('key') ?? '').trim();
   try {
-    const lookup = await lookupFile(c.env, code, { count: true, isHead: c.req.method === 'HEAD' });
+    const lookup = await lookupFile(c.env, codeQuery(c), { count: true, isHead: c.req.method === 'HEAD' });
     if (lookup.status === 'notFound') return failWith(c, 404, '文件不存在或已过期');
     if (lookup.status === 'maxExceeded') return failWith(c, 403, '已达最大下载次数');
     return buildDownloadResponse(lookup.file, lookup.obj, c.req.method === 'HEAD');

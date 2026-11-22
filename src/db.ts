@@ -1,7 +1,6 @@
 /** 数据层：仅 D1 读写，不涉及 R2 与 HTTP。 */
 
 import type { ChunkUploadTask, FileRecord } from './types';
-import { FILE_PREFIX } from './utils';
 
 // ===================== 建表 =====================
 
@@ -400,5 +399,3 @@ export async function findActiveCodes(db: D1Database, codes: string[]): Promise<
   }
   return active;
 }
-
-export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
