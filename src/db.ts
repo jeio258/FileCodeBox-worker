@@ -2,6 +2,10 @@
 
 import type { ChunkUploadTask, FileRecord } from './types';
 
+/** 表结构版本：增删表/列时必须 +1；ensureSchema 据此决定是否补建 */
+export const SCHEMA_VERSION = 3;
+const SCHEMA_KEY = 'schema_version';
+
 // ===================== 建表 =====================
 
 /** 初始化数据库表（幂等：scheduled 每次调用都执行，首次部署自动就绪） */
@@ -62,6 +66,18 @@ export async function initDB(db: D1Database): Promise<void> {
   await migrate("DELETE FROM fc_settings WHERE key = 'admin_token'");
   await migrate("INSERT OR IGNORE INTO fc_rate_limits(key, count, window_start) SELECT key, 1, CAST(json_extract(value, '$.windowStart') AS INTEGER) FROM fc_settings WHERE key LIKE '%ratelimit:%'");
   await migrate("DELETE FROM fc_settings WHERE key LIKE 'login_ratelimit:%' OR key LIKE 'upload_ratelimit:%'");
+  // 记录版本，供 ensureSchema 判断是否需要补建
+  await db.prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)').bind(SCHEMA_KEY, String(SCHEMA_VERSION)).run();
+}
+
+/** 读取库内 schema 版本（表不存在或损坏视为 0） */
+export async function getSchemaVersion(db: D1Database): Promise<number> {
+  try {
+    const row = await db.prepare('SELECT value FROM fc_settings WHERE key = ?').bind(SCHEMA_KEY).first<{ value: string }>();
+    return row ? Number(row.value) || 0 : 0;
+  } catch {
+    return 0;
+  }
 }
 
 // ===================== 文件 =====================
@@ -360,6 +376,23 @@ export async function checkRateLimit(
   windowMs: number,
 ): Promise<boolean> {
   const now = Date.now();
+  try {
+    return await bumpRateLimit(db, keyPrefix, ip, max, windowMs, now);
+  } catch (e) {
+    // 限流表异常不应让整个上传不可用：降级放行并记录
+    console.error(JSON.stringify({ event: 'ratelimit_unavailable', error: String(e) }));
+    return true;
+  }
+}
+
+async function bumpRateLimit(
+  db: D1Database,
+  keyPrefix: string,
+  ip: string,
+  max: number,
+  windowMs: number,
+  now: number,
+): Promise<boolean> {
   const row = await db
     .prepare(
       `INSERT INTO fc_rate_limits(key, count, window_start) VALUES(?1, 1, ?2)

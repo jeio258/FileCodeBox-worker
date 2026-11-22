@@ -7,7 +7,8 @@
     "deploy": "npm run preflight && wrangler deploy",
     "test": "node test-headless.mjs",
     "typecheck": "tsc --noEmit",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "hono": "^4.13.7",

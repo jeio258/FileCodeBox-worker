@@ -9,7 +9,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import type { Env } from './types';
 import { getConfig } from './config';
-import { initDB, getFileByCode, getFileById, listFiles, takeExpiredFiles, cleanupRateLimits } from './db';
+import { initDB, SCHEMA_VERSION, getSchemaVersion, getFileByCode, getFileById, listFiles, takeExpiredFiles, cleanupRateLimits } from './db';
 import { adminAuth, adminPasswordConfigured, handleAdminLogin, handleAdminLogout } from './auth';
 import {
   buildDownloadResponse,
@@ -59,17 +59,13 @@ app.use('*', async (c, next) => {
 });
 
 // ===================== 惰性建表 =====================
-// 首次部署（Cron 尚未触发）时表可能不存在；每个 isolate 用一次轻量探针决定是否建表，
-// 避免"部署后半小时内上传全部 500"。
-let schemaReady = false;
+// 由库内 schema_version 驱动：缺表或版本落后时补建（新版本新增表/列不会漏）。
+// 不能用"探某张老表是否存在"判断——老表存在、新表缺失时会被误判为就绪。
+let readyVersion: number | null = null;
 async function ensureSchema(db: D1Database): Promise<void> {
-  if (schemaReady) return;
-  try {
-    await db.prepare('SELECT 1 FROM fc_settings LIMIT 1').first();
-  } catch {
-    await initDB(db);
-  }
-  schemaReady = true;
+  if (readyVersion === SCHEMA_VERSION) return;
+  if ((await getSchemaVersion(db)) !== SCHEMA_VERSION) await initDB(db);
+  readyVersion = SCHEMA_VERSION;
 }
 
 app.use('*', async (c, next) => {
