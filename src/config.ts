@@ -1,6 +1,6 @@
 /**
- * 运行配置：D1 设置（管理员可改，部署不丢） > env（wrangler.jsonc 兜底） > 内置默认。
- * 读 D1 失败时整体降级到 env/默认，避免首页与上传因数据库抖动不可用。
+ * 运行配置：D1 设置（后台可改，部署不丢） > 内置默认。
+ * 不再读取 wrangler 变量，避免"改了变量却没生效/后台改了又被部署覆盖"的双重来源。
  */
 
 import type { Env, RuntimeConfig } from './types';
@@ -39,14 +39,10 @@ export async function getConfig(env: Env): Promise<RuntimeConfig> {
   const settings = await getSettings(env.DB, CONFIG_READ_KEYS).catch(() => ({}) as Record<string, string>);
 
   return {
-    maxSize: toBoundedInt(
-      settings[CONFIG_KEYS.maxSize],
-      toBoundedInt(env.MAX_FILE_SIZE, DEFAULT_MAX_SIZE, MAX_CONFIG_SIZE),
-      MAX_CONFIG_SIZE,
-    ),
+    maxSize: toBoundedInt(settings[CONFIG_KEYS.maxSize], DEFAULT_MAX_SIZE, MAX_CONFIG_SIZE),
     defaultExpireDays: toBoundedInt(
       settings[CONFIG_KEYS.defaultExpireDays],
-      toBoundedInt(env.DEFAULT_EXPIRE_DAYS, DEFAULT_EXPIRE_DAYS, MAX_CONFIG_EXPIRE_DAYS),
+      DEFAULT_EXPIRE_DAYS,
       MAX_CONFIG_EXPIRE_DAYS,
     ),
     openUpload: (settings[CONFIG_KEYS.openUpload] ?? '1') !== '0',

@@ -97,8 +97,6 @@ export interface Env {
   FILE_STORE: R2Bucket;
   /** 未配置时回退 D1 密码哈希，两者皆无则拒绝登录 */
   ADMIN_PASSWORD?: string;
-  MAX_FILE_SIZE?: string;
-  DEFAULT_EXPIRE_DAYS?: string;
   /** Turnstile 站点键（前端渲染）与密钥（服务端校验），两者都配置才可用 */
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET?: string;

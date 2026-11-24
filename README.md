@@ -72,13 +72,12 @@ wrangler d1 create filecodebox-db
   ],
   "d1_databases": [
     { "binding": "DB", "database_name": "filecodebox-db", "database_id": "你的D1_ID" }
-  ],
-  "vars": {
-    "MAX_FILE_SIZE": "314572800",
-    "DEFAULT_EXPIRE_DAYS": "7"
-  }
+  ]
 }
 ```
+
+> 无需配置 `vars`：单文件上限、默认有效期、全站配额、游客上传、Turnstile 都在
+> **后台 → 系统设置** 里调整（存 D1，保存即生效，部署不会覆盖）。
 
 #### 6. 设置管理员密码（Secret，不写入配置）
 
@@ -267,8 +266,6 @@ curl -X PATCH "https://你的域名/admin/config/update" \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ADMIN_PASSWORD` | - | 管理员密码（**Secret**，`wrangler secret put` 设置） |
-| `MAX_FILE_SIZE` | `314572800` | 最大文件大小缺省值（300MB） |
-| `DEFAULT_EXPIRE_DAYS` | `7` | 默认过期天数缺省值 |
 
 ### 配置优先级（重要）
 
@@ -319,7 +316,7 @@ FileCodeBox-worker/
 
 - **分层单向依赖**：`utils` → `db`/`storage` → `config`/`expire` → `files`/`upload` → `auth` → `respond` → `routes/*` → `index`。路由只做参数与响应转换，业务逻辑单一实现
 - **命名边界**：数据库行为 snake_case（仅 `db.ts` 内），对外一律 camelCase 领域模型；线缆字段维持既有契约
-- **配置单一来源**：`MAX_FILE_SIZE`/`DEFAULT_EXPIRE_DAYS` 以 env 为默认，管理面板设置可覆盖（`config.getConfig`）
+- **配置单一来源**：上限/有效期/配额/开关只存 D1 设置（后台可改），代码内置默认值兜底；不再读取部署变量
 - **上传实现**：R2 multipart 流式写入（30MB/块，内存与文件大小无关）；>100MB 走分片上传（30MB/片，断点续传、并发、失败重试）
 - **取件码复用机制**：原子抢占（`claimCode`）+ 删除/过期/取消后 `releaseCode` 释放，可循环使用
 - **下载计数**：`incrementDownload` 原子更新，避免并发超限；HEAD 不计数

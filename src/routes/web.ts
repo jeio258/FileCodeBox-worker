@@ -249,7 +249,7 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
     const saved = c.req.query('saved') === '1';
     return c.html(
       adminSettingsPage(
-        { config, used, turnstileReady: turnstileConfigured(c.env), varsMaxSize: toInt(c.env.MAX_FILE_SIZE, config.maxSize) },
+        { config, used, turnstileReady: turnstileConfigured(c.env) },
         saved,
       ),
     );

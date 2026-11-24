@@ -999,8 +999,7 @@ export function adminPanel(
       '<a href="/">首页</a><a href="/admin/settings">设置</a><a href="/admin/logout">退出</a>',
     )}
 
-    <div class="toolbar">
-      <form method="get" action="/admin" class="filter-bar">
+    <form method="get" action="/admin" class="filter-bar">
       <div class="input-group grow">
         <label>关键词</label>
         <input type="text" name="keyword" class="input" value="${escapeHtml(filters.keyword)}" placeholder="文件名搜索">
@@ -1018,12 +1017,10 @@ export function adminPanel(
         <select name="sort" class="input">${sortOptions}</select>
       </div>
       <button type="submit" class="btn btn-primary">筛选</button>
-        ${filtered ? '<a href="/admin" class="btn btn-secondary">重置</a>' : ''}
-      </form>
-      <form method="post" action="/admin/cleanup" class="cleanup-form" onsubmit="return confirm('确认清理所有过期文件？')">
-        <button type="submit" class="btn btn-secondary">清理过期文件</button>
-      </form>
-    </div>
+      ${filtered ? '<a href="/admin" class="btn btn-secondary">重置</a>' : ''}
+      <button type="submit" class="btn btn-secondary cleanup-btn" formaction="/admin/cleanup" formmethod="post"
+        onclick="return confirm('确认清理所有过期文件？')">清理过期文件</button>
+    </form>
 
     <div>${rows || '<div class="empty-hint">暂无文件</div>'}</div>
     ${totalPages > 1 ? `<div class="pagination">第 ${page}/${totalPages} 页 &middot; 共 ${total} 个文件</div>` : ''}
@@ -1047,7 +1044,6 @@ export interface SettingsInput {
   };
   used: number;
   turnstileReady: boolean;
-  varsMaxSize: number;
 }
 
 export function adminSettingsPage(o: SettingsInput, saved = false): string {
@@ -1069,7 +1065,7 @@ export function adminSettingsPage(o: SettingsInput, saved = false): string {
       <div class="input-group">
         <label>单文件上限（MB）</label>
         <input type="number" name="maxFileSizeMb" class="input" min="0.1" step="0.1" value="${mb(o.config.maxSize)}">
-        <div class="hint">清空或非法值将保持当前值；部署变量值为 ${mb(o.varsMaxSize)} MB</div>
+        <div class="hint">清空或非法值将保持当前值</div>
       </div>
       <div class="input-group">
         <label>默认有效期（天）</label>
