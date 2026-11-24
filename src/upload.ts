@@ -44,7 +44,6 @@ import {
   isValidCode,
   sanitizeFilename,
   summarize,
-  toInt,
 } from './utils';
 
 type Ctx = Context<{ Bindings: Env }>;
@@ -102,30 +101,6 @@ async function allocateCode(rawCode: string, env: Env): Promise<string> {
   throw new HttpError(rawCode ? 409 : 500, rawCode ? '取件码已被占用' : '无法生成唯一取件码');
 }
 
-/** 流式写入 R2；失败时回滚已写对象（取件码回滚由调用方统一处理） */
-async function writeStream(
-  env: Env,
-  key: string,
-  body: ReadableStream | null,
-  meta: { contentType: string; filename: string; maxSize: number },
-): Promise<number> {
-  const reader = (body ?? new ReadableStream()).getReader();
-  const writer = await createMultipartWriter(env.FILE_STORE, key, meta);
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      await writer.push(value);
-    }
-    return await writer.finish();
-  } catch (e) {
-    await writer.abort();
-    await reader.cancel().catch(() => {});
-    await removeObject(env.FILE_STORE, key);
-    throw e;
-  }
-}
-
 // ===================== 普通上传 =====================
 
 export async function uploadFile(c: Ctx, env: Env): Promise<UploadResult> {
@@ -136,22 +111,31 @@ export async function uploadFile(c: Ctx, env: Env): Promise<UploadResult> {
   const filename = sanitizeFilename(c.req.header('X-Filename'));
   const mimeType = c.req.header('Content-Type') || 'application/octet-stream';
 
-  // Content-Length 预检：超限直接拒绝，不读 body；缺失时由流式计数兜底
-  const contentLength = toInt(c.req.header('Content-Length'), -1);
-  if (contentLength > config.maxSize) throw new HttpError(413, `文件过大，最大 ${Math.floor(config.maxSize / 1024 / 1024)}MB`);
+  // 零拷贝：请求体直接交给 R2，字节不在 JS 里搬运（避免 Free 计划 CPU 超限）。
+  // 因此要求已知长度；缺失时 411 并提示改走分片，绝不退化成整读内存。
+  const contentLength = c.req.header('Content-Length');
+  const declared = Number(contentLength);
+  const knownLength = contentLength !== undefined && Number.isInteger(declared) && declared >= 0;
+  if (!knownLength) throw new HttpError(411, '上传必须带 Content-Length（分块传输请改走分片接口）');
+  if (declared > config.maxSize) throw new HttpError(413, `文件过大，最大 ${Math.floor(config.maxSize / 1024 / 1024)}MB`);
 
   const code = await allocateCode((query.code ?? '').trim(), env);
+  const key = fileKey(code);
   const clientIp = getClientIp(c.req.raw.headers);
 
   try {
-    const size = await writeStream(env, fileKey(code), c.req.raw.body, {
-      contentType: mimeType,
-      filename,
-      maxSize: config.maxSize,
+    const obj = await env.FILE_STORE.put(key, c.req.raw.body, {
+      httpMetadata: { contentType: mimeType },
+      customMetadata: { filename },
     });
-    await insertFile(env.DB, { code, filename, size, mimeType, expireAt: expire.expireAt, maxDownloads: expire.maxDownloads, clientIp });
-    return { code, filename, size };
+    if (!obj) throw new Error('R2 put failed');
+    await insertFile(env.DB, {
+      code, filename, size: obj.size, mimeType,
+      expireAt: expire.expireAt, maxDownloads: expire.maxDownloads, clientIp,
+    });
+    return { code, filename, size: obj.size };
   } catch (e) {
+    await env.FILE_STORE.delete(key).catch(() => {});
     await releaseCode(env.DB, code);
     throw e;
   }
