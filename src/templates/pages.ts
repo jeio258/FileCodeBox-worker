@@ -310,6 +310,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
           });
         }
         (function () {
+          var LOAD_FAIL = '内容加载失败，请稍后重试。';
           var el = document.getElementById('textContent');
           var ctrl = new AbortController();
           var timer = setTimeout(function () { ctrl.abort(); }, 8000);
@@ -323,7 +324,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
               clearTimeout(timer);
               if (r.status === 403) { fail('该内容已达最大查看次数。'); return null; }
               if (r.status === 404) { fail('内容不存在或已被清理。'); return null; }
-              if (!r.ok) { fail('内容加载失败，请稍后重试。'); return null; }
+              if (!r.ok) { fail(LOAD_FAIL); return null; }
               return r.text();
             })
             .then(function (t) {
@@ -334,7 +335,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
             })
             .catch(function (err) {
               if (err.name === 'AbortError') fail('加载超时，请刷新重试。');
-              else fail('内容加载失败，请稍后重试。');
+              else fail(LOAD_FAIL);
             });
         })();
         </script>`;
@@ -375,6 +376,8 @@ export function adminLoginPage(error?: string): string {
 }
 
 // ===================== 管理面板 =====================
+
+const ADMIN_TITLE = '管理面板';
 
 const SORT_LABELS: Record<string, string> = {
   newest: '最新上传',
@@ -436,7 +439,7 @@ export function adminPanel(
 
   const content = `
     ${pageHeader(
-      '管理面板',
+      ADMIN_TITLE,
       `共 ${total} 个文件${
         storage
           ? storage.limit > 0
@@ -476,7 +479,7 @@ export function adminPanel(
       ${page > 1 ? `<a href="${pageUrl(page - 1)}">&larr; 上一页</a>` : ''}
       ${page < totalPages ? `<a href="${pageUrl(page + 1)}">下一页 &rarr;</a>` : ''}
     </div>`;
-  return layout('管理面板', card(content), true, true);
+  return layout(ADMIN_TITLE, card(content), true, true);
 }
 
 
@@ -495,6 +498,7 @@ export interface SettingsInput {
 }
 
 export function adminSettingsPage(o: SettingsInput, saved = false): string {
+  // 表单输入用 MB 数值（保留两位小数），与展示用的 formatFileSize 职责不同，勿合并
   const mb = (bytes: number) => (bytes > 0 ? String(Math.round((bytes / 1048576) * 100) / 100) : '');
   const content = `
     <div class="header">

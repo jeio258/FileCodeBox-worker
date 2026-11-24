@@ -242,7 +242,7 @@ export async function chunkInit(c: Ctx, env: Env): Promise<ChunkInitResult> {
   const config = await prepareUpload(c, env);
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
-  if (!body) throw new HttpError(422, '请求体不能为空');
+  if (!body) throw new HttpError(422, MESSAGES.bodyRequired);
 
   const size = Number(body.size);
   if (!Number.isInteger(size) || size <= 0) throw new HttpError(422, '无效的文件大小');

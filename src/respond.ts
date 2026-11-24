@@ -9,7 +9,7 @@
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from './types';
-import { publicMessage, statusOf } from './utils';
+import { MESSAGES, publicMessage, statusOf } from './utils';
 import { errorPage } from './templates/pages';
 
 export type Ctx = Context<{ Bindings: Env }>;
@@ -22,7 +22,7 @@ export const json =
     try {
       return await fn(c);
     } catch (e) {
-      return c.json({ error: publicMessage(e, '服务器内部错误') }, statusCode(e));
+      return c.json({ error: publicMessage(e, MESSAGES.internal) }, statusCode(e));
     }
   };
 
@@ -47,7 +47,7 @@ export const compat =
     try {
       return await fn(c);
     } catch (e) {
-      return compatFail(c, statusOf(e), publicMessage(e, '服务器内部错误'));
+      return compatFail(c, statusOf(e), publicMessage(e, MESSAGES.internal));
     }
   };
 

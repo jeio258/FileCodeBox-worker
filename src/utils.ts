@@ -50,6 +50,10 @@ export const MESSAGES = {
   turnstileRequired: '请先完成人机校验',
   turnstileFailed: '人机校验未通过，请重试',
   uploadDisabled: '游客上传已关闭，请先登录',
+  bodyRequired: '请求体不能为空',
+  notFound: '文件不存在或已过期',
+  maxExceeded: '已达最大下载次数',
+  thumbExists: '缩略图已存在',
   internal: '服务器内部错误',
 } as const;
 

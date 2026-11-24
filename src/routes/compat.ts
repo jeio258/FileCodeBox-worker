@@ -11,7 +11,7 @@ import { getDashboardStats, getFileById, listFiles } from '../db';
 import { changePassword, isAdminAuthed, login } from '../auth';
 import { buildDownloadResponse, deleteStoredFile, resolveShare } from '../files';
 import { uploadFile, uploadText } from '../upload';
-import { formatFileSize, getClientIp } from '../utils';
+import { MESSAGES, formatFileSize, getClientIp } from '../utils';
 import { codeOf, compat, compatFail, compatOk, type Ctx } from '../respond';
 
 const api = new Hono<{ Bindings: Env }>();
@@ -66,8 +66,8 @@ async function selectHandler(c: Ctx, count: boolean): Promise<Response> {
     isHead: false,
     clientIp: getClientIp(c.req.raw.headers),
   });
-  if (lookup.status === 'notFound') return compatFail(c, 404, '文件不存在或已过期');
-  if (lookup.status === 'maxExceeded') return compatFail(c, 403, '已达最大下载次数');
+  if (lookup.status === 'notFound') return compatFail(c, 404, MESSAGES.notFound);
+  if (lookup.status === 'maxExceeded') return compatFail(c, 403, MESSAGES.maxExceeded);
 
   const { file, obj } = lookup;
   return compatOk(c, {
@@ -88,8 +88,8 @@ register(
   compat(async (c) => {
     const isHead = c.req.method === 'HEAD';
     const lookup = await resolveShare(c.env, codeOf(c), { count: true, isHead });
-    if (lookup.status === 'notFound') return compatFail(c, 404, '文件不存在或已过期');
-    if (lookup.status === 'maxExceeded') return compatFail(c, 403, '已达最大下载次数');
+    if (lookup.status === 'notFound') return compatFail(c, 404, MESSAGES.notFound);
+    if (lookup.status === 'maxExceeded') return compatFail(c, 403, MESSAGES.maxExceeded);
     return buildDownloadResponse(lookup.file, lookup.obj, isHead);
   }),
 );
@@ -154,7 +154,7 @@ adminApi.get('/config/get', async (c) => compatOk(c, configToApi(await getConfig
 
 adminApi.patch('/config/update', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
-  if (!body) return compatFail(c, 422, '请求体不能为空');
+  if (!body) return compatFail(c, 422, MESSAGES.bodyRequired);
   return compatOk(c, configToApi(await updateConfig(c.env, body)));
 });
 
@@ -162,7 +162,7 @@ adminApi.post(
   '/password',
   compat(async (c) => {
     const body = await c.req.json<{ current_password?: string; new_password?: string }>().catch(() => null);
-    if (!body) return compatFail(c, 422, '请求体不能为空');
+    if (!body) return compatFail(c, 422, MESSAGES.bodyRequired);
     await changePassword(c, c.env, body.current_password ?? '', body.new_password ?? '');
     return compatOk(c, { changed: true });
   }),

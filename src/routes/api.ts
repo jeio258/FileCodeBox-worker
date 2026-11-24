@@ -11,7 +11,7 @@ import { assertUploadAllowed } from '../auth';
 import { buildDownloadResponse, readThumb, resolveShare, saveThumb } from '../files';
 import { allocateCodeRun, chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, uploadFile, uploadText } from '../upload';
 import { enforceRateFor } from '../rate';
-import { getBaseUrl, getClientIp, isValidCode, toInt } from '../utils';
+import { MESSAGES, getBaseUrl, getClientIp, isValidCode, toInt } from '../utils';
 import { generateQRCodeGIF } from '../qr';
 import { errorPage } from '../templates/pages';
 import { html, json, codeOf, isHead, pathParam, type Ctx } from '../respond';
@@ -76,9 +76,9 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }>): void {
         isHead: isHead(c),
         clientIp: getClientIp(c.req.raw.headers),
       });
-      if (lookup.status === 'notFound') return c.html(errorPage('文件不存在', '该文件可能已被清理'), 404);
+      if (lookup.status === 'notFound') return c.html(errorPage(MESSAGES.notFound, '该文件可能已被清理'), 404);
       if (lookup.status === 'maxExceeded') {
-        return c.html(errorPage('已达最大下载次数', '该文件的下载次数已用完'), 403);
+        return c.html(errorPage(MESSAGES.maxExceeded, '该文件的下载次数已用完'), 403);
       }
       return buildDownloadResponse(lookup.file, lookup.obj, isHead(c));
     }),

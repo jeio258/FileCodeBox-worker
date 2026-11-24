@@ -9,6 +9,7 @@ export const HOME_SCRIPT = `
     var CHUNK_SIZE = CFG.chunkSize || 31457280;
     var MAX_TEXT_BYTES = CFG.maxTextBytes || 524288;
     var pendingFiles = [];
+    var SEND_LABEL = '发件并获取取件码';
 
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(function (t) {
@@ -19,10 +20,12 @@ export const HOME_SCRIPT = `
       if (panel) panel.classList.add('active');
     }
 
+    // 与后端 utils.formatFileSize 完全一致（GB/MB/KB/B，>= 边界，一位小数）
     function fmtBytes(n) {
+      if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
       if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
       if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
-      return Math.round(n) + ' B';
+      return n + ' B';
     }
 
     // ---- 文件选择：点击 / 拖拽 / 粘贴 ----
@@ -435,11 +438,11 @@ export const HOME_SCRIPT = `
             box.appendChild(a);
           });
           btn.disabled = false;
-          btn.textContent = '发件并获取取件码';
+          btn.textContent = SEND_LABEL;
         })
         .catch(function (err) {
           btn.disabled = false;
-          btn.textContent = '发件并获取取件码';
+          btn.textContent = SEND_LABEL;
           wrap.style.display = 'none';
           meta.hidden = true;
           status.textContent = '上传中断';
@@ -472,9 +475,9 @@ export const HOME_SCRIPT = `
     // 浏览器后退会从 bfcache 恢复表单页：按钮/进度条可能还停在「上传中」，必须一起还原
     window.addEventListener('pageshow', function () {
       var b = document.getElementById('textSubmitBtn');
-      if (b) { b.disabled = false; b.textContent = '发件并获取取件码'; }
+      if (b) { b.disabled = false; b.textContent = SEND_LABEL; }
       var ub = document.getElementById('submitBtn');
-      if (ub) { ub.disabled = false; ub.textContent = '发件并获取取件码'; }
+      if (ub) { ub.disabled = false; ub.textContent = SEND_LABEL; }
       var wrap = document.getElementById('uploadProgress');
       if (wrap) wrap.style.display = 'none';
       var bar = document.getElementById('uploadProgressBar');

@@ -4,15 +4,18 @@
  */
 
 import type { Env, FileRecord } from './types';
-import { HttpError, MAX_THUMB_BYTES, ORPHAN_GRACE_MS, RATE_WINDOW_MS, fileKey, stripFilePrefix, thumbKey } from './utils';
 import {
-  checkRateLimit,
-  deleteFileRecord,
-  findExistingCodes,
-  getFileByCode,
-  incrementDownload,
-  markFileThumb,
-} from './db';
+  HttpError,
+  MAX_THUMB_BYTES,
+  MESSAGES,
+  ORPHAN_GRACE_MS,
+  RATE_LIMITS,
+  fileKey,
+  stripFilePrefix,
+  thumbKey,
+} from './utils';
+import { allowRate } from './rate';
+import { deleteFileRecord, findExistingCodes, getFileByCode, incrementDownload, markFileThumb } from './db';
 import { listFileObjects, putThumbObject, readThumbObject, removeObject, removeObjects } from './storage';
 
 export type ShareLookup =
@@ -29,13 +32,13 @@ export async function resolveShare(
   code: string,
   opts: { count: boolean; isHead: boolean; textOnly?: boolean; clientIp?: string },
 ): Promise<ShareLookup> {
-  if (!code) throw new HttpError(422, '缺少取件码');
+  if (!code) throw new HttpError(422, MESSAGES.missingCode);
 
   const file = await getFileByCode(env.DB, code);
   if (!file) {
-    // 失败查询按 IP 限流（5 次/分钟），防 4 位码暴力枚举
-    if (opts.clientIp && !(await checkRateLimit(env.DB, 'lookup_ratelimit', opts.clientIp, 5, RATE_WINDOW_MS))) {
-      throw new HttpError(429, '查询失败次数过多，请稍后再试');
+    // 失败查询按 IP 限流，防 4 位码暴力枚举（策略表见 utils.RATE_LIMITS.lookup）
+    if (opts.clientIp && !(await allowRate(env.DB, 'lookup', opts.clientIp))) {
+      throw new HttpError(429, RATE_LIMITS.lookup.message);
     }
     return { status: 'notFound' };
   }
@@ -73,7 +76,7 @@ export async function deleteStoredFile(env: Env, file: FileRecord): Promise<void
 
 /** 保存浏览器端生成的缩略图（每文件仅一次，不可覆盖） */
 export async function saveThumb(env: Env, code: string, data: ArrayBuffer): Promise<void> {
-  if (!code) throw new HttpError(422, '缺少取件码');
+  if (!code) throw new HttpError(422, MESSAGES.missingCode);
   if (data.byteLength === 0) throw new HttpError(422, '缩略图为空');
   if (data.byteLength > MAX_THUMB_BYTES) throw new HttpError(413, '缩略图过大');
 
@@ -86,14 +89,14 @@ export async function saveThumb(env: Env, code: string, data: ArrayBuffer): Prom
   if (!isWebp) throw new HttpError(415, '缩略图必须是 WEBP');
 
   const file = await getFileByCode(env.DB, code);
-  if (!file) throw new HttpError(404, '文件不存在或已过期');
-  if (file.hasThumb) throw new HttpError(409, '缩略图已存在');
+  if (!file) throw new HttpError(404, MESSAGES.notFound);
+  if (file.hasThumb) throw new HttpError(409, MESSAGES.thumbExists);
 
   await putThumbObject(env.FILE_STORE, code, data);
   const ok = await markFileThumb(env.DB, code);
   if (!ok) {
     await removeObject(env.FILE_STORE, thumbKey(code));
-    throw new HttpError(409, '缩略图已存在');
+    throw new HttpError(409, MESSAGES.thumbExists);
   }
 }
 

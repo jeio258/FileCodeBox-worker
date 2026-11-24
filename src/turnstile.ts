@@ -4,7 +4,7 @@
  */
 
 import type { Env } from './types';
-import { HttpError, getClientIp } from './utils';
+import { HttpError, MESSAGES, getClientIp } from './utils';
 import { isAdminAuthed } from './auth';
 import type { Context } from 'hono';
 
@@ -26,7 +26,7 @@ export async function assertTurnstile(
   if (await isAdminAuthed(c, env)) return;
 
   const token = (formToken ?? c.req.header('X-Turnstile-Token') ?? '').trim();
-  if (!token) throw new HttpError(403, '请先完成人机校验');
+  if (!token) throw new HttpError(403, MESSAGES.turnstileRequired);
 
   const form = new FormData();
   form.append('secret', env.TURNSTILE_SECRET!.trim());
@@ -39,5 +39,5 @@ export async function assertTurnstile(
     body: form,
   }).catch(() => null);
   const data = (await res?.json().catch(() => null)) as { success?: boolean } | null;
-  if (!data?.success) throw new HttpError(403, '人机校验未通过，请重试');
+  if (!data?.success) throw new HttpError(403, MESSAGES.turnstileFailed);
 }
