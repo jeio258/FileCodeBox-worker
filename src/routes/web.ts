@@ -11,7 +11,7 @@ import { assertUploadAllowed, isAdminAuthed, isAdminPasswordConfigured, login, l
 import { buildDownloadResponse, deleteStoredFile, readThumb, resolveShare, saveThumb } from '../files';
 import { allocateCodeRun, chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, uploadFile, uploadText } from '../upload';
 import { removeObjects } from '../storage';
-import { CHUNK_SIZE, HttpError, PLAIN_UPLOAD_LIMIT, RATE_WINDOW_MS, fileKey, getBaseUrl, getClientIp, isValidCode, toInt } from '../utils';
+import { CHUNK_SIZE, CODES_RATE_MAX, HttpError, PLAIN_UPLOAD_LIMIT, RATE_WINDOW_MS, fileKey, getBaseUrl, getClientIp, isValidCode, toInt } from '../utils';
 import { checkRateLimit } from '../db';
 import { turnstileConfigured, turnstileSiteKey } from '../turnstile';
 import { generateQRCodeGIF } from '../qr';
@@ -203,7 +203,7 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
       await assertUploadAllowed(c, config);
       // 取件码只有 1 万个，批量接口用更紧的独立配额，避免被用来耗尽码空间
       const ip = getClientIp(c.req.raw.headers);
-      if (!(await checkRateLimit(c.env.DB, 'codes_ratelimit', ip, 3, RATE_WINDOW_MS))) {
+      if (!(await checkRateLimit(c.env.DB, 'codes_ratelimit', ip, CODES_RATE_MAX, RATE_WINDOW_MS))) {
         throw new HttpError(429, '申请取件码过于频繁，请稍后再试');
       }
       return c.json({ codes: await allocateCodeRun(c.env, toInt(pathParam(c, 'count'), 0)) });

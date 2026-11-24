@@ -21,7 +21,6 @@ export const STYLE = `
   --color-accent-contrast: rgb(255 255 255);
   --color-focus:        rgb(113 113 122);
   --focus-ring:         rgb(24 24 27 / 0.20);
-  --color-success:      rgb(4 120 87);
   --color-danger:       rgb(220 38 38);
 
   /* ---- glass + elevation ---- */
@@ -61,7 +60,6 @@ export const STYLE = `
     --color-accent-contrast: rgb(9 9 11);
     --color-focus:        rgb(161 161 170);
     --focus-ring:         rgb(244 244 245 / 0.26);
-    --color-success:      rgb(52 211 153);
     --color-danger:       rgb(248 113 113);
 
     --surface-glass:  rgb(24 24 27 / 0.82);
@@ -215,11 +213,6 @@ body {
   width: 100%;
 }
 .btn-secondary:hover { background: var(--color-paper-3); border-color: var(--color-ink); }
-.btn-sm {
-  padding: 7px 14px;
-  font-size: 13px;
-  width: auto;
-}
 .btn-auto { width: auto; padding: 10px 20px; white-space: nowrap; }
 .btn-danger {
   color: var(--color-danger);

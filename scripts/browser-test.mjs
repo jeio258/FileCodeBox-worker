@@ -53,12 +53,12 @@ async function test() {
   let textCode = null;
   try {
     // 切换到文本面板
-    await page.click('button.tab:has-text("文本")');
+    await page.click('[data-tab="text"]');
     await page.waitForTimeout(500);
     const textContent = '无头浏览器测试文本内容 ' + Date.now();
-    await page.fill('#tab-text textarea', textContent);
-    await page.fill('#tab-text input[name="code"]', '');
+    await page.fill('#textInput', textContent);
     await page.click('#textSubmitBtn');
+    await page.waitForURL(/\/r\/\d{4}/, { timeout: 30000 });
     await page.waitForLoadState('networkidle', { timeout: 30000 });
     // 等待跳转或结果
     await page.waitForTimeout(2000);
@@ -108,7 +108,6 @@ async function test() {
       mimeType: 'text/plain',
       buffer: Buffer.from(testFileContent, 'utf-8'),
     });
-    await page.fill('#tab-file input[name="code"]', '');
     await page.click('#submitBtn');
     // 等待上传完成（可能有跳转）
     await page.waitForTimeout(5000);

@@ -20,6 +20,8 @@ export const MAX_CONFIG_EXPIRE_DAYS = 3650;
 export const RATE_WINDOW_MS = 60_000;
 export const UPLOAD_RATE_MAX = 10;
 export const LOGIN_RATE_MAX = 5;
+/** 批量分配取件码的独立配额：码只有 1 万个，必须比上传更紧 */
+export const CODES_RATE_MAX = 3;
 
 /** 分片任务无活动多久后回收（put 会刷新活跃时间） */
 export const CHUNK_STALE_MS = 6 * 3_600_000;
@@ -35,8 +37,6 @@ export const ADMIN_MIN_PASSWORD_LEN = 6;
 export const FILE_PREFIX = 'file:';
 export const fileKey = (code: string) => `${FILE_PREFIX}${code}`;
 export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
-export const chunkKey = (uploadId: string, index: number) => `chunk:${uploadId}:${index}`;
-export const chunkPrefix = (uploadId: string) => `chunk:${uploadId}:`;
 export const thumbKey = (code: string) => `thumb:${code}`;
 
 // ===================== 错误 =====================
@@ -45,13 +45,6 @@ export const thumbKey = (code: string) => `thumb:${code}`;
 export class HttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
-  }
-}
-
-/** 超出大小上限（写入器与上传入口共用，避免字符串协议） */
-export class PayloadTooLargeError extends HttpError {
-  constructor(maxSize: number) {
-    super(413, `文件过大，最大 ${Math.floor(maxSize / 1024 / 1024)}MB`);
   }
 }
 
@@ -122,6 +115,10 @@ export function formatFileSize(bytes: number): string {
 
 /** 字节数 → MB 整数（错误文案用） */
 export const mbOf = (bytes: number) => Math.floor(bytes / 1024 / 1024);
+
+/** 超限错误的唯一构造处，避免同一文案散落在各上传路径 */
+export const tooLarge = (maxSize: number) =>
+  new HttpError(413, `文件过大，最大 ${mbOf(maxSize)}MB`);
 
 // ===================== 请求信息 =====================
 

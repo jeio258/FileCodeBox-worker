@@ -25,15 +25,6 @@ export async function readThumbObject(bucket: R2Bucket, code: string): Promise<R
   return bucket.get(thumbKey(code));
 }
 
-export async function getObject(bucket: R2Bucket, key: string): Promise<R2ObjectBody | null> {
-  return bucket.get(key);
-}
-
-export async function getObjectText(bucket: R2Bucket, key: string): Promise<string | null> {
-  const obj = await bucket.get(key);
-  return obj ? obj.text() : null;
-}
-
 export async function removeObject(bucket: R2Bucket, key: string): Promise<void> {
   await bucket.delete(key).catch(() => {});
 }

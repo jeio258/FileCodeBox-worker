@@ -50,6 +50,7 @@ import {
   mbOf,
   sanitizeFilename,
   summarize,
+  tooLarge,
 } from './utils';
 
 type Ctx = Context<{ Bindings: Env }>;
@@ -165,7 +166,7 @@ export async function uploadFile(c: Ctx, env: Env): Promise<UploadResult> {
   const declared = Number(contentLength);
   const knownLength = contentLength !== undefined && Number.isInteger(declared) && declared >= 0;
   if (!knownLength) throw new HttpError(411, '上传必须带 Content-Length（分块传输请改走分片接口）');
-  if (declared > config.maxSize) throw new HttpError(413, `文件过大，最大 ${Math.floor(config.maxSize / 1024 / 1024)}MB`);
+  if (declared > config.maxSize) throw tooLarge(config.maxSize);
 
   await assertTurnstile(c, env, config.turnstileEnabled);
   await assertStorageQuota(env, config, declared);
@@ -243,7 +244,7 @@ export async function chunkInit(c: Ctx, env: Env): Promise<ChunkInitResult> {
 
   const size = Number(body.size);
   if (!Number.isInteger(size) || size <= 0) throw new HttpError(422, '无效的文件大小');
-  if (size > config.maxSize) throw new HttpError(413, `文件过大，最大 ${Math.floor(config.maxSize / 1024 / 1024)}MB`);
+  if (size > config.maxSize) throw tooLarge(config.maxSize);
 
   const totalChunks = Math.ceil(size / CHUNK_SIZE);
   if (Number(body.total_chunks) !== totalChunks) throw new HttpError(422, `分片数量应为 ${totalChunks}`);
@@ -313,7 +314,7 @@ export async function chunkPut(c: Ctx, env: Env): Promise<{ ok: true; index: num
 
   const data = await c.req.arrayBuffer();
   if (data.byteLength === 0) throw new HttpError(422, '分片内容为空');
-  if (data.byteLength > CHUNK_SIZE) throw new HttpError(413, '分片超过 30MB');
+  if (data.byteLength > CHUNK_SIZE) throw new HttpError(413, `分片超过 ${mbOf(CHUNK_SIZE)}MB`);
 
   // 同片重传覆盖 etag：R2 只保留最后一次 uploadPart 的结果
   const etag = await uploadMultipartPart(env.FILE_STORE, fileKey(task.code), r2UploadId, index + 1, data);
