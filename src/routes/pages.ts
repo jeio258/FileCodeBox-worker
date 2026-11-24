@@ -11,6 +11,7 @@ import { homePage, retrievePage, filePage } from '../templates/pages';
 import { turnstileConfigured, turnstileSiteKey } from '../turnstile';
 import { PLAIN_UPLOAD_LIMIT, getBaseUrl } from '../utils';
 import { pathParam, type Ctx } from '../respond';
+import { cached } from '../cache';
 
 const noStore = (c: Ctx) => c.header('Cache-Control', 'no-store');
 const baseUrl = (c: Ctx) => getBaseUrl(new URL(c.req.url).origin, c.req.header('host'));
@@ -29,12 +30,15 @@ async function renderHome(c: Ctx): Promise<Response> {
 }
 export function registerPageRoutes(app: Hono<{ Bindings: Env }>): void {
 
-  app.get('/', async (c) => {
-    // 首页只依赖配置（上限/天数/Turnstile），允许边缘与浏览器短缓存：
-    // 每次请求都查 D1 是 TTFB 的主要成本，no-store 会让每次刷新都重新走一遍。
-    c.header('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=300');
-    return renderHome(c);
-  });
+  app.get('/', (c) =>
+    // 首页只依赖配置（上限/天数/Turnstile）：用 Cache API 落到边缘，
+    // 避免每次请求都跑一遍 Worker + 查 D1（实测这部分占 TTFB ~370ms）。
+    cached(c, 30, async () => {
+      const res = await renderHome(c);
+      res.headers.set('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=300');
+      return res;
+    }),
+  );
 
   app.get('/r', (c) => {
     const code = (c.req.query('code') ?? '').trim();

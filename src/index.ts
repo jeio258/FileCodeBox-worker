@@ -22,24 +22,29 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', cors({ origin: 'self', allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] }));
 
+const CSP =
+  "default-src 'self'; " +
+  // Cloudflare Web Analytics 由边缘自动注入，不放开会被 CSP 拦掉并产生控制台报错
+  "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com https://challenges.cloudflare.com; " +
+  "connect-src 'self' https://cloudflareinsights.com https://challenges.cloudflare.com; " +
+  "frame-src https://challenges.cloudflare.com; " +
+  "style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' https://t.alcy.cc https://q1.qlogo.cn https: data: blob:; " +
+  "object-src 'none'; " +
+  "frame-ancestors 'none';";
+
 app.use('*', async (c, next) => {
   await next();
+
+  // 注意：c.html()/c.json() 返回的响应头是 immutable，直接 set 会抛
+  // TypeError: Can't modify immutable headers —— 必须重建响应再写头。
+  const headers = new Headers(c.res.headers);
   // 私密内容与状态接口一律不缓存（页面另在各自路由设 no-store）
-  if (c.req.path.startsWith('/api/')) c.res.headers.set('Cache-Control', 'no-store');
-  c.res.headers.set('Referrer-Policy', 'no-referrer');
-  // CSP：限制资源来源，降低 XSS 影响面
-  c.res.headers.set(
-    'Content-Security-Policy',
-    "default-src 'self'; " +
-      // Cloudflare Web Analytics 由边缘自动注入，不放开会被 CSP 拦掉并产生控制台报错
-      "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com https://challenges.cloudflare.com; " +
-      "connect-src 'self' https://cloudflareinsights.com https://challenges.cloudflare.com; " +
-      "frame-src https://challenges.cloudflare.com; " +
-      "style-src 'self' 'unsafe-inline'; " +
-      "img-src 'self' https://t.alcy.cc https://q1.qlogo.cn https: data: blob:; " +
-      "object-src 'none'; " +
-      "frame-ancestors 'none';",
-  );
+  if (c.req.path.startsWith('/api/')) headers.set('Cache-Control', 'no-store');
+  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('Content-Security-Policy', CSP);
+
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
 });
 
 // ===================== 惰性建表 =====================
