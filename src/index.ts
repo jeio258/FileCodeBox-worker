@@ -9,9 +9,7 @@ import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { SCHEMA_VERSION, getSchemaVersion, initDB } from './db';
 import { runMaintenance } from './maintenance';
-import { homePage } from './templates/pages';
-import { getConfig } from './config';
-import { PLAIN_UPLOAD_LIMIT } from './utils';
+import { errorPage } from './templates/pages';
 import { registerWebRoutes } from './routes/web';
 import compatApi from './routes/compat';
 
@@ -23,6 +21,8 @@ app.use('*', cors({ origin: 'self', allowMethods: ['GET', 'POST', 'PUT', 'PATCH'
 
 app.use('*', async (c, next) => {
   await next();
+  // 私密内容与状态接口一律不缓存（页面另在各自路由设 no-store）
+  if (c.req.path.startsWith('/api/')) c.res.headers.set('Cache-Control', 'no-store');
   c.res.headers.set('Referrer-Policy', 'no-referrer');
   // CSP：限制资源来源，降低 XSS 影响面
   c.res.headers.set(
@@ -66,10 +66,8 @@ app.route('/api', compatApi);
 app.all('/api/*', (c) => c.json({ code: 404, msg: 'Not Found' }, 404));
 
 // 全站兜底必须最后注册，否则会抢在兼容 API 之前吃掉 /api/* 请求
-app.all('*', async (c) => {
-  const config = await getConfig(c.env);
-  return c.html(homePage({ chunkThreshold: Math.min(config.maxSize, PLAIN_UPLOAD_LIMIT) }));
-});
+// 未知路径返回真正的 404（不再回首页冒充正常页面）
+app.all('*', (c) => c.html(errorPage('页面不存在', '请检查地址是否正确'), 404));
 
 // ===================== 入口 =====================
 

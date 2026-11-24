@@ -11,7 +11,7 @@ import { isAdminAuthed, isAdminPasswordConfigured, login, logout } from '../auth
 import { buildDownloadResponse, deleteStoredFile, resolveShare } from '../files';
 import { chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, uploadFile, uploadText } from '../upload';
 import { removeObjects } from '../storage';
-import { CHUNK_SIZE, PLAIN_UPLOAD_LIMIT, fileKey, getBaseUrl, isValidCode } from '../utils';
+import { CHUNK_SIZE, PLAIN_UPLOAD_LIMIT, fileKey, getBaseUrl, getClientIp, isValidCode } from '../utils';
 import { generateQRCodeGIF } from '../qr';
 import { STYLE } from '../templates/style';
 import {
@@ -125,7 +125,12 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get(
     '/api/text/:code',
     json(async (c) => {
-      const lookup = await resolveShare(c.env, codeOf(c), { count: true, isHead: isHead(c), textOnly: true });
+      const lookup = await resolveShare(c.env, codeOf(c), {
+        count: true,
+        isHead: isHead(c),
+        textOnly: true,
+        clientIp: getClientIp(c.req.raw.headers),
+      });
       if (lookup.status === 'notFound') return c.text('Not found', 404);
       if (lookup.status === 'maxExceeded') return c.text('Max downloads exceeded', 403);
       return c.text(await lookup.obj.text());
@@ -135,7 +140,11 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get(
     '/api/download/:code',
     html(async (c) => {
-      const lookup = await resolveShare(c.env, codeOf(c), { count: true, isHead: isHead(c) });
+      const lookup = await resolveShare(c.env, codeOf(c), {
+        count: true,
+        isHead: isHead(c),
+        clientIp: getClientIp(c.req.raw.headers),
+      });
       if (lookup.status === 'notFound') return c.html(errorPage('文件不存在', '该文件可能已被清理'), 404);
       if (lookup.status === 'maxExceeded') {
         return c.html(errorPage('已达最大下载次数', '该文件的下载次数已用完'), 403);
@@ -150,7 +159,11 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
       const file = await getFileByCode(c.env.DB, codeOf(c));
       if (!file) return c.json({ error: 'not found' }, 404);
       return c.json({
-        filename: file.filename,
+        // 达查看上限后按下游口径遮蔽标题，避免正文被拒读而标题仍泄露
+        filename:
+          file.isText && file.maxDownloads >= 0 && file.downloadCount >= file.maxDownloads
+            ? '***'
+            : file.filename,
         size: file.size,
         download_count: file.downloadCount,
         max_downloads: file.maxDownloads,

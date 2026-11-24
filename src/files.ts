@@ -4,8 +4,8 @@
  */
 
 import type { Env, FileRecord } from './types';
-import { HttpError, ORPHAN_GRACE_MS, fileKey, stripFilePrefix } from './utils';
-import { deleteFileRecord, findExistingCodes, getFileByCode, incrementDownload } from './db';
+import { HttpError, ORPHAN_GRACE_MS, RATE_WINDOW_MS, fileKey, stripFilePrefix } from './utils';
+import { checkRateLimit, deleteFileRecord, findExistingCodes, getFileByCode, incrementDownload } from './db';
 import { listFileObjects, removeObject, removeObjects } from './storage';
 
 export type ShareLookup =
@@ -20,12 +20,18 @@ export type ShareLookup =
 export async function resolveShare(
   env: Env,
   code: string,
-  opts: { count: boolean; isHead: boolean; textOnly?: boolean },
+  opts: { count: boolean; isHead: boolean; textOnly?: boolean; clientIp?: string },
 ): Promise<ShareLookup> {
   if (!code) throw new HttpError(422, '缺少取件码');
 
   const file = await getFileByCode(env.DB, code);
-  if (!file) return { status: 'notFound' };
+  if (!file) {
+    // 失败查询按 IP 限流（5 次/分钟），防 4 位码暴力枚举
+    if (opts.clientIp && !(await checkRateLimit(env.DB, 'lookup_ratelimit', opts.clientIp, 5, RATE_WINDOW_MS))) {
+      throw new HttpError(429, '查询失败次数过多，请稍后再试');
+    }
+    return { status: 'notFound' };
+  }
   if (opts.textOnly && !file.isText) return { status: 'notFound' };
 
   const obj = await env.FILE_STORE.get(fileKey(code));
@@ -44,6 +50,7 @@ export function buildDownloadResponse(file: FileRecord, obj: R2ObjectBody, isHea
       'Content-Type': file.mimeType || 'application/octet-stream',
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
       'Content-Length': String(obj.size),
+      'X-Content-Type-Options': 'nosniff',
     },
   });
 }

@@ -11,10 +11,14 @@ import { getDashboardStats, getFileById, listFiles } from '../db';
 import { changePassword, isAdminAuthed, login } from '../auth';
 import { buildDownloadResponse, deleteStoredFile, resolveShare } from '../files';
 import { uploadFile, uploadText } from '../upload';
-import { formatFileSize } from '../utils';
+import { formatFileSize, getClientIp } from '../utils';
 import { codeOf, compat, compatFail, compatOk, type Ctx } from '../respond';
 
 const api = new Hono<{ Bindings: Env }>();
+
+/** 达查看上限的文本：标题遮蔽，避免正文被拒读而标题仍泄露 */
+const displayName = (file: { isText: boolean; maxDownloads: number; downloadCount: number; filename: string }) =>
+  file.isText && file.maxDownloads >= 0 && file.downloadCount >= file.maxDownloads ? '***' : file.filename;
 
 /** 兼容带/不带尾斜杠两种写法 */
 function register(
@@ -57,16 +61,21 @@ register(
 
 /** GET 计入查看次数，POST 仅查询 */
 async function selectHandler(c: Ctx, count: boolean): Promise<Response> {
-  const lookup = await resolveShare(c.env, codeOf(c), { count, isHead: false });
+  const lookup = await resolveShare(c.env, codeOf(c), {
+    count,
+    isHead: false,
+    clientIp: getClientIp(c.req.raw.headers),
+  });
   if (lookup.status === 'notFound') return compatFail(c, 404, '文件不存在或已过期');
   if (lookup.status === 'maxExceeded') return compatFail(c, 403, '已达最大下载次数');
 
   const { file, obj } = lookup;
   return compatOk(c, {
     code: file.code,
-    name: file.filename,
+    name: displayName(file),
     size: file.size,
-    text: file.isText ? await obj.text() : undefined,
+    // POST 只查状态，绝不顺带读出正文（否则 max_downloads 被绕过）
+    text: count && file.isText ? await obj.text() : undefined,
   });
 }
 
