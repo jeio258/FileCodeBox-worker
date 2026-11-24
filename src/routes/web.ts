@@ -16,6 +16,7 @@ import { checkRateLimit } from '../db';
 import { turnstileConfigured, turnstileSiteKey } from '../turnstile';
 import { generateQRCodeGIF } from '../qr';
 import { STYLE } from '../templates/style';
+import { HOME_JS } from '../templates/home-script';
 import {
   adminLoginPage,
   adminPanel,
@@ -66,6 +67,17 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
     }),
   );
 
+  // 首页脚本外置：内容哈希换 URL + immutable，避免每次请求都重新下载 ~19KB 内联 JS
+  app.get('/static/home.js', () =>
+    new Response(HOME_JS, {
+      headers: {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': IMMUTABLE,
+        'X-Content-Type-Options': 'nosniff',
+      },
+    }),
+  );
+
   // 背景图本地提供：固定 URL + 长缓存（替代外部随机图源的跳转与超大图）
   app.get('/static/bg.webp', async (c) => {
     const obj = await c.env.FILE_STORE.get('bg.webp');
@@ -78,7 +90,9 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
   // ===================== 页面 =====================
 
   app.get('/', async (c) => {
-    noStore(c);
+    // 首页只依赖配置（上限/天数/Turnstile），允许边缘与浏览器短缓存：
+    // 每次请求都查 D1 是 TTFB 的主要成本，no-store 让每次刷新都重新走一遍。
+    c.header('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=300');
     return home(c);
   });
 

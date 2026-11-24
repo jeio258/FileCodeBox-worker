@@ -32,6 +32,8 @@ export function layout(title: string, content: string, showFooter = true, wide =
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${title}</title>
   <link rel="icon" href="https://q1.qlogo.cn/g?b=qq&nk=2847495839&s=640">
+  <link rel="preconnect" href="https://t.alcy.cc" crossorigin>
+  <link rel="dns-prefetch" href="https://t.alcy.cc">
   <link rel="stylesheet" href="/static/style.css?v=${STYLE_VERSION}">
 </head>
 <body>
@@ -40,6 +42,12 @@ export function layout(title: string, content: string, showFooter = true, wide =
     ${footer}
   </div>
   <script>
+  // 首屏完成后（空闲）再加载外部随机图背景：它不参与 FCP/Load 关键路径
+  (function () {
+    function paint() { document.body.classList.add('bg-ready'); }
+    if ('requestIdleCallback' in window) requestIdleCallback(paint, { timeout: 2000 });
+    else setTimeout(paint, 600);
+  })();
   // 统一复制反馈：取件码卡（.click-hint）与普通按钮/文本两类目标
   function codeCopy(el, t) {
     navigator.clipboard.writeText(t).then(function () {

@@ -93,6 +93,15 @@ body {
 
 ::selection { background: var(--color-accent-soft); }
 
+/* 背景就绪后才绘制：外部随机图不再参与首屏关键路径 */
+body.bg-ready {
+  background-image: url("https://t.alcy.cc/ycy");
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
 .container {
   max-width: 460px;
   margin: 0 auto;
