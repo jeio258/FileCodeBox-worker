@@ -290,19 +290,24 @@ FileCodeBox-worker/
 ├── src/
 │   ├── index.ts               # 入口：中间件、惰性建表、路由装配、Cron
 │   ├── types.ts               # 领域模型 / DB 行 / Env
-│   ├── utils.ts               # 常量、错误类型、文本/哈希/IP/key 等纯函数
+│   ├── utils.ts               # 常量、错误类型、限流策略表、文案表、纯函数
 │   ├── db.ts                  # D1 数据层（行 ↔ 领域模型映射唯一处）
-│   ├── storage.ts             # R2 存储层（multipart 写入器、分片对象）
-│   ├── config.ts              # 运行配置（D1 设置 > env > 默认）
+│   ├── storage.ts             # R2 存储层（multipart、分片 etag、会话登记）
+│   ├── config.ts              # 运行配置（D1 设置 > 内置默认）
 │   ├── expire.ts              # 过期策略（字段别名与换算唯一处）
+│   ├── rate.ts                # 限流门面（桶名/上限/文案查表）
 │   ├── auth.ts                # 认证：密码来源、会话、上传门控
-│   ├── files.ts               # 读取域：取件解析/下载响应/删除/孤儿清理
+│   ├── turnstile.ts           # 可选人机校验
+│   ├── files.ts               # 读取域：取件解析/下载响应/删除/缩略图/孤儿清理
 │   ├── upload.ts              # 写入域：普通/文本/分片上传与超时回收
 │   ├── maintenance.ts         # Cron 编排（唯一维护入口）
 │   ├── respond.ts             # 响应层：json/html/compat 三种出口 + 参数提取
 │   ├── qr.ts                  # 二维码
 │   ├── routes/
-│   │   ├── web.ts             # Web 路由（页面/上传/下载/管理/自检）
+│   │   ├── static.ts          # 静态资源（css / home.js / bg.webp）
+│   │   ├── pages.ts           # 页面（首页 / 取件落地 / 取件页）
+│   │   ├── api.ts             # 业务 API（上传 / 读取 / 批量码 / 缩略图）
+│   │   ├── admin.ts           # 管理面板 / 设置 / 自检
 │   │   └── compat.ts          # FileCodeBox v2.1.0 兼容 API（挂载 /api）
 │   └── templates/
 │       ├── layout.ts          # HTML 布局

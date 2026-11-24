@@ -13,13 +13,14 @@ import {
   ADMIN_TOKEN_KEY,
   ADMIN_TOKEN_MAX_AGE,
   HttpError,
-  LOGIN_RATE_MAX,
-  RATE_WINDOW_MS,
+  MESSAGES,
+  RATE_LIMITS,
   getClientIp,
   hashPassword,
   timingSafeCompare,
 } from './utils';
-import { checkRateLimit, getSetting, getState, setSetting, setState } from './db';
+import { getSetting, getState, setSetting, setState } from './db';
+import { allowRate } from './rate';
 import { CONFIG_KEYS } from './config';
 
 type Ctx = Context<{ Bindings: Env }>;
@@ -66,8 +67,8 @@ export async function login(c: Ctx, env: Env, inputPassword: string): Promise<Lo
   if (!expected) return { success: false, error: NO_PASSWORD_HINT, status: 401 };
 
   const ip = getClientIp(c.req.raw.headers) || 'unknown';
-  if (!(await checkRateLimit(env.DB, 'login_ratelimit', ip, LOGIN_RATE_MAX, RATE_WINDOW_MS))) {
-    return { success: false, error: '尝试次数过多，请稍后再试', status: 429 };
+  if (!(await allowRate(env.DB, 'login', ip))) {
+    return { success: false, error: RATE_LIMITS.login.message, status: 429 };
   }
 
   if (!timingSafeCompare(await hashPassword(inputPassword), expected)) {
@@ -124,5 +125,5 @@ export async function changePassword(
 export async function assertUploadAllowed(c: Ctx, config: RuntimeConfig): Promise<void> {
   if (config.openUpload) return;
   if (await isAdminAuthed(c, c.env)) return;
-  throw new HttpError(401, '游客上传已关闭，请先登录');
+  throw new HttpError(401, MESSAGES.uploadDisabled);
 }

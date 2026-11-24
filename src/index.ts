@@ -10,7 +10,10 @@ import type { Env } from './types';
 import { SCHEMA_VERSION, getSchemaVersion, initDB } from './db';
 import { runMaintenance } from './maintenance';
 import { errorPage } from './templates/pages';
-import { registerWebRoutes } from './routes/web';
+import { registerStaticRoutes } from './routes/static';
+import { registerPageRoutes } from './routes/pages';
+import { registerApiRoutes } from './routes/api';
+import { registerAdminRoutes } from './routes/admin';
 import compatApi from './routes/compat';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -60,7 +63,11 @@ app.use('*', async (c, next) => {
 
 // ===================== 路由装配 =====================
 
-registerWebRoutes(app);
+// 装配顺序即匹配优先级：静态 → 页面 → 业务 API → 管理/自检 → 兼容 API → 兜底
+registerStaticRoutes(app);
+registerPageRoutes(app);
+registerApiRoutes(app);
+registerAdminRoutes(app);
 
 // 兼容 API 必须晚于 Web 路由注册，未知 /api/* 返回 404 而不是落到首页
 app.route('/api', compatApi);

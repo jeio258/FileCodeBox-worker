@@ -10,7 +10,6 @@ import { readExpireInput, resolveExpire } from './expire';
 import { assertUploadAllowed } from './auth';
 import { assertTurnstile } from './turnstile';
 import {
-  checkRateLimit,
   claimCode,
   cleanupUsedCodes,
   deleteChunkParts,
@@ -45,19 +44,19 @@ import {
   CHUNK_STALE_MS,
   HttpError,
   MAX_TEXT_BYTES,
-  RATE_WINDOW_MS,
-  UPLOAD_RATE_MAX,
+  MESSAGES,
+  SESSION_PREFIX,
   fileKey,
   generateCode,
   getClientIp,
-  SESSION_PREFIX,
   isValidCode,
-  toInt,
   mbOf,
   sanitizeFilename,
   summarize,
+  toInt,
   tooLarge,
 } from './utils';
+import { enforceRate } from './rate';
 
 type Ctx = Context<{ Bindings: Env }>;
 
@@ -87,10 +86,7 @@ async function prepareUpload(c: Ctx, env: Env): Promise<RuntimeConfig> {
   const config = await getConfig(env);
   await assertUploadAllowed(c, config);
 
-  const ip = getClientIp(c.req.raw.headers);
-  if (!(await checkRateLimit(env.DB, 'upload_ratelimit', ip, UPLOAD_RATE_MAX, RATE_WINDOW_MS))) {
-    throw new HttpError(429, '上传过于频繁，请稍后再试');
-  }
+  await enforceRate(env.DB, 'upload', getClientIp(c.req.raw.headers) || 'unknown');
   return config;
 }
 
@@ -131,8 +127,8 @@ export async function allocateCodeRun(env: Env, count: number): Promise<string[]
 
 /** 认领批量接口预占的码（已存在于占用表，不再重复抢占） */
 async function adoptCode(rawCode: string, env: Env): Promise<string> {
-  if (!isValidCode(rawCode)) throw new HttpError(400, '取件码必须为 4 位数字');
-  if (!(await isCodeReserved(env.DB, rawCode))) throw new HttpError(409, '取件码未被预占或已失效');
+  if (!isValidCode(rawCode)) throw new HttpError(400, MESSAGES.codeFormat);
+  if (!(await isCodeReserved(env.DB, rawCode))) throw new HttpError(409, MESSAGES.codeNotReserved);
   return rawCode;
 }
 
@@ -142,7 +138,7 @@ async function adoptCode(rawCode: string, env: Env): Promise<string> {
  * 并发同码仅一个请求成功，失败方不再写 R2/D1。
  */
 async function allocateCode(rawCode: string, env: Env): Promise<string> {
-  if (rawCode && !isValidCode(rawCode)) throw new HttpError(400, '取件码必须为 4 位数字');
+  if (rawCode && !isValidCode(rawCode)) throw new HttpError(400, MESSAGES.codeFormat);
 
   for (let i = 0; i < 20; i++) {
     const code = rawCode || generateCode();
@@ -153,7 +149,7 @@ async function allocateCode(rawCode: string, env: Env): Promise<string> {
     if (await claimCode(env.DB, code)) return code;
     if (rawCode) break;
   }
-  throw new HttpError(rawCode ? 409 : 500, rawCode ? '取件码已被占用' : '无法生成唯一取件码');
+  throw new HttpError(rawCode ? 409 : 500, rawCode ? MESSAGES.codeTaken : MESSAGES.codeGenerateFailed);
 }
 
 // ===================== 普通上传 =====================
@@ -298,33 +294,29 @@ export async function chunkInit(c: Ctx, env: Env): Promise<ChunkInitResult> {
   return { uploadId: task.uploadId, code, chunkSize: CHUNK_SIZE, totalChunks };
 }
 
-/** 分片任务必须存在，否则 404 */
-async function requireTask(env: Env, uploadId: string): Promise<ChunkTask> {
+/**
+ * 取可续传的分片会话：任务必须存在且带 R2 会话句柄。
+ * 旧版本（无 r2UploadId）的任务无法续传，与"不存在"同样处理。
+ */
+async function requireSession(env: Env, uploadId: string): Promise<{ task: ChunkTask; r2UploadId: string }> {
   const task = uploadId ? await getChunkTask(env.DB, uploadId) : null;
-  if (!task) throw new HttpError(404, '上传任务不存在或已过期');
-  return task;
-}
-
-/** 旧版本建的任务没有 R2 会话句柄，无法续传，按任务不存在处理 */
-function requireR2UploadId(task: ChunkTask): string {
-  if (!task.r2UploadId) throw new HttpError(404, '上传任务不存在或已过期');
-  return task.r2UploadId;
+  if (!task?.r2UploadId) throw new HttpError(404, MESSAGES.chunkMissing);
+  return { task, r2UploadId: task.r2UploadId };
 }
 
 const uploadIdOf = (c: Ctx) => (c.req.param('upload_id') ?? '').trim();
 
 export async function chunkPut(c: Ctx, env: Env): Promise<{ ok: true; index: number; }> {
-  const task = await requireTask(env, uploadIdOf(c));
-  const r2UploadId = requireR2UploadId(task);
+  const { task, r2UploadId } = await requireSession(env, uploadIdOf(c));
   const index = Number(c.req.param('index'));
 
   if (!Number.isInteger(index) || index < 0 || index >= task.totalChunks) {
-    throw new HttpError(422, '无效的分片序号');
+    throw new HttpError(422, MESSAGES.chunkIndexInvalid);
   }
 
   const data = await c.req.arrayBuffer();
-  if (data.byteLength === 0) throw new HttpError(422, '分片内容为空');
-  if (data.byteLength > CHUNK_SIZE) throw new HttpError(413, `分片超过 ${mbOf(CHUNK_SIZE)}MB`);
+  if (data.byteLength === 0) throw new HttpError(422, MESSAGES.chunkEmpty);
+  if (data.byteLength > CHUNK_SIZE) throw new HttpError(413, MESSAGES.chunkTooLarge);
 
   // 同片重传覆盖 etag：R2 只保留最后一次 uploadPart 的结果
   const etag = await uploadMultipartPart(env.FILE_STORE, fileKey(task.code), r2UploadId, index + 1, data);
@@ -337,7 +329,7 @@ export async function chunkStatus(
   c: Ctx,
   env: Env,
 ): Promise<{ uploadId: string; code: string; totalChunks: number; received: number[]; }> {
-  const task = await requireTask(env, uploadIdOf(c));
+  const { task } = await requireSession(env, uploadIdOf(c));
   const parts = await listChunkParts(env.DB, task.uploadId);
   return {
     uploadId: task.uploadId,
@@ -348,15 +340,14 @@ export async function chunkStatus(
 }
 
 export async function chunkComplete(c: Ctx, env: Env): Promise<UploadResult> {
-  const task = await requireTask(env, uploadIdOf(c));
-  const r2UploadId = requireR2UploadId(task);
+  const { task, r2UploadId } = await requireSession(env, uploadIdOf(c));
   const key = fileKey(task.code);
 
   const etags = new Map((await listChunkParts(env.DB, task.uploadId)).map((p) => [p.partIndex, p.etag]));
   const parts: R2UploadedPart[] = [];
   for (let i = 0; i < task.totalChunks; i++) {
     const etag = etags.get(i);
-    if (!etag) throw new HttpError(409, `缺少第 ${i + 1} 片，请先上传`);
+    if (!etag) throw new HttpError(409, MESSAGES.chunkPartMissing(i + 1));
     parts.push({ partNumber: i + 1, etag });
   }
 
@@ -364,7 +355,7 @@ export async function chunkComplete(c: Ctx, env: Env): Promise<UploadResult> {
     const obj = await completeMultipartSession(env.FILE_STORE, key, r2UploadId, parts);
     if (obj.size !== task.size) {
       await removeObject(env.FILE_STORE, key);
-      throw new HttpError(409, `分片总大小与声明不一致（${obj.size} ≠ ${task.size}）`);
+      throw new HttpError(409, MESSAGES.chunkSizeMismatch(obj.size, task.size));
     }
     await insertFile(env.DB, {
       code: task.code,

@@ -18,10 +18,40 @@ export const MAX_CONFIG_SIZE = 1024 * 1024 * 1024;
 export const MAX_CONFIG_EXPIRE_DAYS = 3650;
 
 export const RATE_WINDOW_MS = 60_000;
-export const UPLOAD_RATE_MAX = 10;
-export const LOGIN_RATE_MAX = 5;
-/** 批量分配取件码的独立配额：码只有 1 万个，必须比上传更紧 */
-export const CODES_RATE_MAX = 3;
+
+/**
+ * 限流策略表：桶名、窗口内上限、超限文案集中在此。
+ * 新增受保护动作只在这里加一行，避免桶名与文案散落在各路由。
+ */
+export const RATE_LIMITS = {
+  upload: { bucket: 'upload_ratelimit', max: 10, message: '上传过于频繁，请稍后再试' },
+  login: { bucket: 'login_ratelimit', max: 5, message: '尝试次数过多，请稍后再试' },
+  /** 失败取件码查询：防 4 位码暴力枚举 */
+  lookup: { bucket: 'lookup_ratelimit', max: 5, message: '查询失败次数过多，请稍后再试' },
+  /** 批量分配取件码：码只有 1 万个，必须比上传更紧 */
+  codes: { bucket: 'codes_ratelimit', max: 3, message: '申请取件码过于频繁，请稍后再试' },
+} as const;
+
+export type RateKind = keyof typeof RATE_LIMITS;
+
+/** 对外错误文案的唯一来源，避免同一句话在多个文件里各写一遍 */
+export const MESSAGES = {
+  codeFormat: '取件码必须为 4 位数字',
+  codeTaken: '取件码已被占用',
+  codeNotReserved: '取件码未被预占或已失效',
+  codeGenerateFailed: '无法生成唯一取件码',
+  missingCode: '缺少取件码',
+  chunkMissing: '上传任务不存在或已过期',
+  chunkIndexInvalid: '无效的分片序号',
+  chunkEmpty: '分片内容为空',
+  chunkTooLarge: `分片超过 ${Math.floor(CHUNK_SIZE / 1024 / 1024)}MB`,
+  chunkPartMissing: (n: number) => `缺少第 ${n} 片，请先上传`,
+  chunkSizeMismatch: (got: number, want: number) => `分片总大小与声明不一致（${got} ≠ ${want}）`,
+  turnstileRequired: '请先完成人机校验',
+  turnstileFailed: '人机校验未通过，请重试',
+  uploadDisabled: '游客上传已关闭，请先登录',
+  internal: '服务器内部错误',
+} as const;
 
 /** 分片任务无活动多久后回收（put 会刷新活跃时间） */
 export const CHUNK_STALE_MS = 6 * 3_600_000;
