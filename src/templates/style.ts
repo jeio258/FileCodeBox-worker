@@ -690,8 +690,9 @@ a.fname:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* ---- 取件：四格分离输入 ---- */
 .pickup-form { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .code-boxes { display: flex; gap: 10px; flex: 1; min-width: 0; }
-/* 发件表单里的自定义取件码：跟在 label 下方，不撑满整行 */
+/* 发件表单里的自定义取件码：跟在 label 下方，四格整体居中（仅自定义码两组，取件码不受影响） */
 .input-group .code-boxes { flex: 0 1 auto; margin-top: 4px; }
+#fileCodeBoxes, #textCodeBoxes { width: 100%; justify-content: center; }
 .code-box {
   width: 52px; height: 60px; flex: 0 0 auto;
   text-align: center;
