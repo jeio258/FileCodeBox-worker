@@ -1,5 +1,18 @@
+import { STYLE } from './style';
+
+/** CSS 内容哈希：改样式自动换 URL，不依赖手工递增 style.css?v=N */
+const STYLE_VERSION = (() => {
+  let h = 2166136261;
+  for (let i = 0; i < STYLE.length; i++) {
+    h ^= STYLE.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+})();
+
 /**
- * 通用 HTML 布局包装器。
+ * 通用 HTML 布局包装器：只负责容器宽度与页脚。
+ * 卡片由页面自己包（首页是两张，其余页面一张），所以这里不再套 .card。
  * wide=true 时容器放宽到 720px（取件/分享/管理面板双栏布局用）。
  */
 export function layout(title: string, content: string, showFooter = true, wide = false): string {
@@ -19,26 +32,22 @@ export function layout(title: string, content: string, showFooter = true, wide =
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${title}</title>
   <link rel="icon" href="https://q1.qlogo.cn/g?b=qq&nk=2847495839&s=640">
-  <link rel="stylesheet" href="/static/style.css?v=8">
+  <link rel="stylesheet" href="/static/style.css?v=${STYLE_VERSION}">
 </head>
 <body>
   <div class="container${wide ? ' container-wide' : ''}">
-    <div class="card">${content}</div>
+    ${content}
     ${footer}
   </div>
   <script>
-  // 统一复制反馈：取件码卡（含 .click-hint）与普通按钮（改自身文本）两类目标
-  function codeCopy(el, text) {
-    navigator.clipboard.writeText(text).then(function () {
+  // 统一复制反馈：取件码卡（.click-hint）与普通按钮/文本两类目标
+  function codeCopy(el, t) {
+    navigator.clipboard.writeText(t).then(function () {
       var hint = el.querySelector('.click-hint');
-      if (hint) {
-        hint.textContent = '已复制';
-        setTimeout(function () { hint.textContent = '点击复制'; }, 1500);
-      } else {
-        var prev = el.textContent;
-        el.textContent = '已复制';
-        setTimeout(function () { el.textContent = prev; }, 1500);
-      }
+      var target = hint || el.querySelector('span') || el;
+      var prev = hint ? '点击复制' : target.textContent;
+      target.textContent = '已复制';
+      setTimeout(function () { target.textContent = prev; }, 1500);
     });
   }
   </script>

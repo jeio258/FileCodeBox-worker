@@ -28,6 +28,15 @@ export interface ChunkTaskRow {
   client_ip: string;
   created_at: string;
   updated_at: string;
+  /** 升级前的任务没有 R2 会话句柄 */
+  r2_upload_id: string | null;
+}
+
+/** fc_chunk_parts 行 */
+export interface ChunkPartRow {
+  upload_id: string;
+  part_index: number;
+  etag: string;
 }
 
 /** 文件领域模型 */
@@ -58,6 +67,14 @@ export interface ChunkTask {
   clientIp: string;
   createdAt: string;
   updatedAt: string;
+  /** R2 multipart 会话 id（init 时创建） */
+  r2UploadId: string | null;
+}
+
+/** 已上传分片的 etag（partIndex 从 0 起，对应 R2 partNumber = partIndex + 1） */
+export interface ChunkPart {
+  partIndex: number;
+  etag: string;
 }
 
 /** 新建文件记录的入参 */

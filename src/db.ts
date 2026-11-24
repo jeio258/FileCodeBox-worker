@@ -4,6 +4,8 @@
  */
 
 import type {
+  ChunkPart,
+  ChunkPartRow,
   ChunkTask,
   ChunkTaskRow,
   DashboardStats,
@@ -14,7 +16,7 @@ import type {
 } from './types';
 
 /** 表结构版本：增删表/列时必须 +1；ensureSchema 据此决定是否补建 */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 const SCHEMA_KEY = 'schema_version';
 
 // ===================== 行 → 领域模型 =====================
@@ -45,7 +47,10 @@ const toChunkTask = (row: ChunkTaskRow): ChunkTask => ({
   clientIp: row.client_ip,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+  r2UploadId: row.r2_upload_id,
 });
+
+const toChunkPart = (row: ChunkPartRow): ChunkPart => ({ partIndex: row.part_index, etag: row.etag });
 
 // ===================== 建表 =====================
 
@@ -90,7 +95,14 @@ const SCHEMA_STATEMENTS = [
     max_downloads INTEGER DEFAULT -1,
     client_ip TEXT DEFAULT '',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    r2_upload_id TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS fc_chunk_parts (
+    upload_id TEXT NOT NULL,
+    part_index INTEGER NOT NULL,
+    etag TEXT NOT NULL,
+    PRIMARY KEY (upload_id, part_index)
   )`,
 ];
 
@@ -106,6 +118,7 @@ export async function initDB(db: D1Database): Promise<void> {
   const migrate = (sql: string) => db.prepare(sql).run().catch(() => {});
   await migrate('ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0');
   await migrate("ALTER TABLE fc_chunk_uploads ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+  await migrate('ALTER TABLE fc_chunk_uploads ADD COLUMN r2_upload_id TEXT');
   await migrate(
     "INSERT OR IGNORE INTO fc_state(key, value) SELECT 'admin_token', value FROM fc_settings WHERE key = 'admin_token'",
   );
@@ -356,7 +369,7 @@ export async function setState(db: D1Database, key: string, value: string): Prom
 export async function insertChunkTask(db: D1Database, t: ChunkTask): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO fc_chunk_uploads(upload_id, code, filename, size, total_chunks, mime_type, expire_at, max_downloads, client_ip, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO fc_chunk_uploads(upload_id, code, filename, size, total_chunks, mime_type, expire_at, max_downloads, client_ip, created_at, updated_at, r2_upload_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
     )
     .bind(
       t.uploadId,
@@ -370,6 +383,7 @@ export async function insertChunkTask(db: D1Database, t: ChunkTask): Promise<voi
       t.clientIp,
       t.createdAt,
       t.updatedAt,
+      t.r2UploadId,
     )
     .run();
 }
@@ -406,6 +420,28 @@ export async function takeStaleChunkTasks(db: D1Database, olderThanMs: number): 
 
   await db.prepare('DELETE FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)').bind(cutoff).run();
   return tasks;
+}
+
+// ===================== 分片 etag =====================
+
+export async function saveChunkPart(db: D1Database, uploadId: string, partIndex: number, etag: string): Promise<void> {
+  await db
+    .prepare('INSERT OR REPLACE INTO fc_chunk_parts(upload_id, part_index, etag) VALUES (?,?,?)')
+    .bind(uploadId, partIndex, etag)
+    .run();
+}
+
+/** 已上传分片（part_index 升序） */
+export async function listChunkParts(db: D1Database, uploadId: string): Promise<ChunkPart[]> {
+  const rows = await db
+    .prepare('SELECT upload_id, part_index, etag FROM fc_chunk_parts WHERE upload_id = ? ORDER BY part_index')
+    .bind(uploadId)
+    .all<ChunkPartRow>();
+  return (rows.results ?? []).map(toChunkPart);
+}
+
+export async function deleteChunkParts(db: D1Database, uploadId: string): Promise<void> {
+  await db.prepare('DELETE FROM fc_chunk_parts WHERE upload_id = ?').bind(uploadId).run();
 }
 
 // ===================== 限流 =====================

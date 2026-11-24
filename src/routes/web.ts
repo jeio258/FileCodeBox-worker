@@ -34,7 +34,13 @@ const noStore = (c: Ctx) => c.header('Cache-Control', 'no-store');
 /** 首页与兜底共用（分片阈值取配置上限与平台单请求上限的较小值） */
 async function home(c: Ctx): Promise<Response> {
   const config = await getConfig(c.env);
-  return c.html(homePage({ chunkThreshold: Math.min(config.maxSize, PLAIN_UPLOAD_LIMIT) }));
+  return c.html(
+    homePage({
+      chunkThreshold: Math.min(config.maxSize, PLAIN_UPLOAD_LIMIT),
+      maxFileSize: config.maxSize,
+      defaultExpireDays: config.defaultExpireDays,
+    }),
+  );
 }
 
 function readFilters(c: Ctx): FileFilters {

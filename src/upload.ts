@@ -12,24 +12,26 @@ import {
   checkRateLimit,
   claimCode,
   cleanupUsedCodes,
+  deleteChunkParts,
   deleteChunkTask,
   getChunkTask,
   getFileByCode,
   insertChunkTask,
   insertFile,
   isCodeTaken,
+  listChunkParts,
   releaseCode,
+  saveChunkPart,
   takeStaleChunkTasks,
   touchChunkTask,
 } from './db';
 import {
-  createMultipartWriter,
-  deleteChunkParts,
-  getChunkPart,
-  listChunkParts,
-  putChunkPart,
+  abortMultipartSession,
+  completeMultipartSession,
+  createMultipartSession,
   putObject,
   removeObject,
+  uploadMultipartPart,
 } from './storage';
 import {
   CHUNK_SIZE,
@@ -207,11 +209,20 @@ export async function chunkInit(c: Ctx, env: Env): Promise<ChunkInitResult> {
     clientIp: getClientIp(c.req.raw.headers),
     createdAt: now,
     updatedAt: now,
+    r2UploadId: null,
   };
 
+  const key = fileKey(code);
+  let r2UploadId: string | null = null;
   try {
-    await insertChunkTask(env.DB, task);
+    r2UploadId = await createMultipartSession(env.FILE_STORE, key, {
+      contentType: task.mimeType,
+      filename: task.filename,
+    });
+    await insertChunkTask(env.DB, { ...task, r2UploadId });
   } catch (e) {
+    // 会话已建但落库失败：必须在返回前 abort，否则成为无法清理的残留会话
+    if (r2UploadId) await abortMultipartSession(env.FILE_STORE, key, r2UploadId).catch(() => {});
     await releaseCode(env.DB, code);
     throw e;
   }
@@ -225,10 +236,17 @@ async function requireTask(env: Env, uploadId: string): Promise<ChunkTask> {
   return task;
 }
 
+/** 旧版本建的任务没有 R2 会话句柄，无法续传，按任务不存在处理 */
+function requireR2UploadId(task: ChunkTask): string {
+  if (!task.r2UploadId) throw new HttpError(404, '上传任务不存在或已过期');
+  return task.r2UploadId;
+}
+
 const uploadIdOf = (c: Ctx) => (c.req.param('upload_id') ?? '').trim();
 
 export async function chunkPut(c: Ctx, env: Env): Promise<{ ok: true; index: number; }> {
   const task = await requireTask(env, uploadIdOf(c));
+  const r2UploadId = requireR2UploadId(task);
   const index = Number(c.req.param('index'));
 
   if (!Number.isInteger(index) || index < 0 || index >= task.totalChunks) {
@@ -239,7 +257,9 @@ export async function chunkPut(c: Ctx, env: Env): Promise<{ ok: true; index: num
   if (data.byteLength === 0) throw new HttpError(422, '分片内容为空');
   if (data.byteLength > CHUNK_SIZE) throw new HttpError(413, '分片超过 30MB');
 
-  await putChunkPart(env.FILE_STORE, task.uploadId, index, data);
+  // 同片重传覆盖 etag：R2 只保留最后一次 uploadPart 的结果
+  const etag = await uploadMultipartPart(env.FILE_STORE, fileKey(task.code), r2UploadId, index + 1, data);
+  await saveChunkPart(env.DB, task.uploadId, index, etag);
   await touchChunkTask(env.DB, task.uploadId);
   return { ok: true, index };
 }
@@ -249,64 +269,59 @@ export async function chunkStatus(
   env: Env,
 ): Promise<{ uploadId: string; code: string; totalChunks: number; received: number[]; }> {
   const task = await requireTask(env, uploadIdOf(c));
+  const parts = await listChunkParts(env.DB, task.uploadId);
   return {
     uploadId: task.uploadId,
     code: task.code,
     totalChunks: task.totalChunks,
-    received: await listChunkParts(env.FILE_STORE, task.uploadId, task.totalChunks),
+    received: parts.map((p) => p.partIndex).filter((i) => i >= 0 && i < task.totalChunks),
   };
 }
 
 export async function chunkComplete(c: Ctx, env: Env): Promise<UploadResult> {
   const task = await requireTask(env, uploadIdOf(c));
-  const config = await getConfig(env);
+  const r2UploadId = requireR2UploadId(task);
   const key = fileKey(task.code);
 
-  let size: number;
+  const etags = new Map((await listChunkParts(env.DB, task.uploadId)).map((p) => [p.partIndex, p.etag]));
+  const parts: R2UploadedPart[] = [];
+  for (let i = 0; i < task.totalChunks; i++) {
+    const etag = etags.get(i);
+    if (!etag) throw new HttpError(409, `缺少第 ${i + 1} 片，请先上传`);
+    parts.push({ partNumber: i + 1, etag });
+  }
+
   try {
-    const writer = await createMultipartWriter(env.FILE_STORE, key, {
-      contentType: task.mimeType,
-      filename: task.filename,
-      maxSize: config.maxSize,
-    });
-    try {
-      for (let i = 0; i < task.totalChunks; i++) {
-        const part = await getChunkPart(env.FILE_STORE, task.uploadId, i);
-        if (!part) throw new HttpError(409, `缺少第 ${i + 1} 片，请先上传`);
-        const reader = part.body.getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writer.push(value);
-        }
-      }
-      size = await writer.finish();
-    } catch (e) {
-      await writer.abort();
-      throw e;
+    const obj = await completeMultipartSession(env.FILE_STORE, key, r2UploadId, parts);
+    if (obj.size !== task.size) {
+      await removeObject(env.FILE_STORE, key);
+      throw new HttpError(409, `分片总大小与声明不一致（${obj.size} ≠ ${task.size}）`);
     }
-
-    if (size !== task.size) throw new HttpError(409, `分片总大小与声明不一致（${size} ≠ ${task.size}）`);
-
     await insertFile(env.DB, {
       code: task.code,
       filename: task.filename,
-      size,
+      size: obj.size,
       mimeType: task.mimeType,
       expireAt: task.expireAt,
       maxDownloads: task.maxDownloads,
       clientIp: task.clientIp,
     });
+
+    // 落库已成功：清理失败不影响本次上传结果，仅留待 Cron 兜底
+    await dropChunkRecords(env, task).catch((e) =>
+      console.error(JSON.stringify({ event: 'chunk_purge_failed', uploadId: task.uploadId, error: String(e) })),
+    );
+    return { code: task.code, filename: task.filename, size: obj.size };
   } catch (e) {
+    // 会话可能已完结（大小不符）或仍开着（complete 失败）：abort 与删除都做一遍，两者均幂等
+    await abortMultipartSession(env.FILE_STORE, key, r2UploadId).catch(() => {});
     await removeObject(env.FILE_STORE, key);
+    await dropChunkRecords(env, task).catch((err) =>
+      console.error(JSON.stringify({ event: 'chunk_purge_failed', uploadId: task.uploadId, error: String(err) })),
+    );
+    await releaseCodeIfUnused(env, task.code);
     throw e;
   }
-
-  // 落库已成功：清理失败不影响本次上传结果，仅留待 Cron 兜底
-  await purgeChunkArtifacts(env, task).catch((e) =>
-    console.error(JSON.stringify({ event: 'chunk_purge_failed', uploadId: task.uploadId, error: String(e) })),
-  );
-  return { code: task.code, filename: task.filename, size };
 }
 
 export async function chunkAbort(c: Ctx, env: Env): Promise<{ ok: true; }> {
@@ -318,9 +333,19 @@ export async function chunkAbort(c: Ctx, env: Env): Promise<{ ok: true; }> {
   return { ok: true };
 }
 
-/** 删除分片对象 + 任务记录（不碰取件码） */
+/** 中断 R2 会话（有句柄才可能）+ 清 D1 分片记录 + 删任务行 */
 async function purgeChunkArtifacts(env: Env, task: ChunkTask): Promise<void> {
-  await deleteChunkParts(env.FILE_STORE, task.uploadId, task.totalChunks);
+  if (task.r2UploadId) {
+    await abortMultipartSession(env.FILE_STORE, fileKey(task.code), task.r2UploadId).catch((e) =>
+      console.error(JSON.stringify({ event: 'chunk_abort_failed', uploadId: task.uploadId, error: String(e) })),
+    );
+  }
+  await dropChunkRecords(env, task);
+}
+
+/** 只清 D1：分片 etag 与任务行 */
+async function dropChunkRecords(env: Env, task: ChunkTask): Promise<void> {
+  await deleteChunkParts(env.DB, task.uploadId);
   await deleteChunkTask(env.DB, task.uploadId);
 }
 
