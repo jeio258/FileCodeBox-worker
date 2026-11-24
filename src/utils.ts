@@ -39,6 +39,14 @@ export const fileKey = (code: string) => `${FILE_PREFIX}${code}`;
 export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
 export const thumbKey = (code: string) => `thumb:${code}`;
 
+/**
+ * 分片会话登记对象：`session:{uploadId}` → JSON { r2UploadId, key, code }。
+ * R2 的 multipart 会话无法被 Worker 枚举，只有把它登记成一个普通对象，
+ * 才能靠 list() 在 D1 记录丢失时仍找回并 abort —— 这是自愈的关键。
+ */
+export const SESSION_PREFIX = 'session:';
+export const sessionKey = (uploadId: string) => `${SESSION_PREFIX}${uploadId}`;
+
 // ===================== 错误 =====================
 
 /** 业务错误：路由层据此决定对外状态码与文案 */

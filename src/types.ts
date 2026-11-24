@@ -98,6 +98,8 @@ export interface Env {
   /** 未配置时回退 D1 密码哈希，两者皆无则拒绝登录 */
   ADMIN_PASSWORD?: string;
   /** Turnstile 站点键（前端渲染）与密钥（服务端校验），两者都配置才可用 */
+  /** 孤儿分片会话宽限期（毫秒，默认 6h）；仅用于运维排查 */
+  ORPHAN_SESSION_GRACE_MS?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET?: string;
 }

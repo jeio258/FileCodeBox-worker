@@ -1,6 +1,6 @@
 /** 存储层：全部 R2 读写。不涉及 D1 与 HTTP。 */
 
-import { FILE_PREFIX, thumbKey } from './utils';
+import { FILE_PREFIX, SESSION_PREFIX, sessionKey, thumbKey } from './utils';
 
 /** 文本等小对象直接写入 */
 export async function putObject(
@@ -83,6 +83,46 @@ export async function abortMultipartSession(
 }
 
 // ===================== 列举 =====================
+
+/** 写入/覆盖会话登记对象（幂等） */
+export async function putSessionRecord(
+  bucket: R2Bucket,
+  uploadId: string,
+  record: { r2UploadId: string; key: string; code: string },
+): Promise<void> {
+  await bucket.put(sessionKey(uploadId), JSON.stringify(record), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+
+export async function getSessionRecord(
+  bucket: R2Bucket,
+  uploadId: string,
+): Promise<{ r2UploadId: string; key: string; code: string } | null> {
+  const obj = await bucket.get(sessionKey(uploadId));
+  if (!obj) return null;
+  try {
+    return JSON.parse(await obj.text());
+  } catch {
+    return null;
+  }
+}
+
+export async function removeSessionRecord(bucket: R2Bucket, uploadId: string): Promise<void> {
+  await bucket.delete(sessionKey(uploadId)).catch(() => {});
+}
+
+/** 列出全部会话登记对象（含上传时间，用于判断是否超时） */
+export async function listSessionRecords(bucket: R2Bucket): Promise<R2Object[]> {
+  const objects: R2Object[] = [];
+  let cursor: string | undefined;
+  do {
+    const listed = await bucket.list({ prefix: SESSION_PREFIX, cursor });
+    objects.push(...listed.objects);
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  return objects;
+}
 
 /** 列出全部 file:* 对象（cursor 翻页，避免只扫首页漏掉字典序靠后的 key） */
 export async function listFileObjects(bucket: R2Bucket): Promise<R2Object[]> {

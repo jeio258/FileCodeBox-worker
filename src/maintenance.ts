@@ -6,7 +6,7 @@
 import type { Env } from './types';
 import { initDB, cleanupRateLimits, takeExpiredFiles } from './db';
 import { cleanupOrphanObjects } from './files';
-import { cleanupStaleChunks, cleanupUnusedCodes } from './upload';
+import { cleanupOrphanSessions, cleanupStaleChunks, cleanupUnusedCodes } from './upload';
 import { RATE_WINDOW_MS, fileKey, thumbKey } from './utils';
 import { removeObjects } from './storage';
 
@@ -16,6 +16,7 @@ export interface MaintenanceReport {
   r2Removed: number;
   rateLimits: number;
   staleChunks: number;
+  orphanSessions: number;
   orphanCodes: number;
   errors: string[];
 }
@@ -46,6 +47,7 @@ export async function runMaintenance(env: Env): Promise<MaintenanceReport> {
   const orphans = await step(errors, 'orphans', () => cleanupOrphanObjects(env), { scanned: 0, removed: 0 });
   const rateLimits = await step(errors, 'rateLimits', () => cleanupRateLimits(env.DB, RATE_WINDOW_MS), 0);
   const staleChunks = await step(errors, 'staleChunks', () => cleanupStaleChunks(env), 0);
+  const orphanSessions = await step(errors, 'orphanSessions', () => cleanupOrphanSessions(env), 0);
   const orphanCodes = await step(errors, 'orphanCodes', () => cleanupUnusedCodes(env), 0);
 
   return {
@@ -54,6 +56,7 @@ export async function runMaintenance(env: Env): Promise<MaintenanceReport> {
     r2Removed: orphans.removed,
     rateLimits,
     staleChunks,
+    orphanSessions,
     orphanCodes,
     errors,
   };

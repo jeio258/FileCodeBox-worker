@@ -32,8 +32,12 @@ import {
   abortMultipartSession,
   completeMultipartSession,
   createMultipartSession,
+  getSessionRecord,
+  listSessionRecords,
   putObject,
+  putSessionRecord,
   removeObject,
+  removeSessionRecord,
   uploadMultipartPart,
 } from './storage';
 import {
@@ -46,7 +50,9 @@ import {
   fileKey,
   generateCode,
   getClientIp,
+  SESSION_PREFIX,
   isValidCode,
+  toInt,
   mbOf,
   sanitizeFilename,
   summarize,
@@ -278,10 +284,14 @@ export async function chunkInit(c: Ctx, env: Env): Promise<ChunkInitResult> {
       contentType: task.mimeType,
       filename: task.filename,
     });
+    // 关键顺序：会话一建好就先在 R2 留登记对象。
+    // R2 的 multipart 会话无法被 Worker 枚举，只有登记成普通对象，
+    // D1 记录丢了（迁移/重建库/进程被杀）才能靠 list('session:') 找回并 abort。
+    await putSessionRecord(env.FILE_STORE, task.uploadId, { r2UploadId, key, code });
     await insertChunkTask(env.DB, { ...task, r2UploadId });
   } catch (e) {
-    // 会话已建但落库失败：必须在返回前 abort，否则成为无法清理的残留会话
     if (r2UploadId) await abortMultipartSession(env.FILE_STORE, key, r2UploadId).catch(() => {});
+    await removeSessionRecord(env.FILE_STORE, task.uploadId).catch(() => {});
     await releaseCode(env.DB, code);
     throw e;
   }
@@ -367,6 +377,7 @@ export async function chunkComplete(c: Ctx, env: Env): Promise<UploadResult> {
     });
 
     // 落库已成功：清理失败不影响本次上传结果，仅留待 Cron 兜底
+    await removeSessionRecord(env.FILE_STORE, task.uploadId).catch(() => {});
     await dropChunkRecords(env, task).catch((e) =>
       console.error(JSON.stringify({ event: 'chunk_purge_failed', uploadId: task.uploadId, error: String(e) })),
     );
@@ -399,6 +410,7 @@ async function purgeChunkArtifacts(env: Env, task: ChunkTask): Promise<void> {
       console.error(JSON.stringify({ event: 'chunk_abort_failed', uploadId: task.uploadId, error: String(e) })),
     );
   }
+  await removeSessionRecord(env.FILE_STORE, task.uploadId);
   await dropChunkRecords(env, task);
 }
 
@@ -425,6 +437,39 @@ export async function cleanupStaleChunks(env: Env): Promise<number> {
     }
   }
   return tasks.length;
+}
+
+/**
+ * Cron：回收"R2 有会话、D1 无任务"的孤儿 multipart。
+ * 这些是 D1 记录丢失（重建库/迁移/进程被杀）后无法通过任务行找到的会话，
+ * 只能靠 R2 里的 session: 登记对象反查；超过宽限期仍未完成的一律 abort。
+ */
+export async function cleanupOrphanSessions(
+  env: Env,
+  graceMs = toInt(env.ORPHAN_SESSION_GRACE_MS, CHUNK_STALE_MS),
+): Promise<number> {
+  const records = await listSessionRecords(env.FILE_STORE);
+  if (!records.length) return 0;
+
+  const now = Date.now();
+  let aborted = 0;
+  for (const obj of records) {
+    if (now - obj.uploaded.getTime() < graceMs) continue;
+
+    const uploadId = obj.key.slice(SESSION_PREFIX.length);
+    const task = await getChunkTask(env.DB, uploadId).catch(() => null);
+    if (task) continue; // 有任务行：交给 cleanupStaleChunks 按 updated_at 处理
+
+    const record = await getSessionRecord(env.FILE_STORE, uploadId);
+    if (record?.r2UploadId) {
+      await abortMultipartSession(env.FILE_STORE, record.key, record.r2UploadId).catch((e) =>
+        console.error(JSON.stringify({ event: 'orphan_session_abort_failed', uploadId, error: String(e) })),
+      );
+    }
+    await removeSessionRecord(env.FILE_STORE, uploadId);
+    aborted += 1;
+  }
+  return aborted;
 }
 
 /** Cron：清理无主占用码（删除中途失败的兜底） */
