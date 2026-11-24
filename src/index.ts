@@ -29,10 +29,11 @@ app.use('*', async (c, next) => {
     'Content-Security-Policy',
     "default-src 'self'; " +
       // Cloudflare Web Analytics 由边缘自动注入，不放开会被 CSP 拦掉并产生控制台报错
-      "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; " +
-      "connect-src 'self' https://cloudflareinsights.com; " +
+      "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com https://challenges.cloudflare.com; " +
+      "connect-src 'self' https://cloudflareinsights.com https://challenges.cloudflare.com; " +
+      "frame-src https://challenges.cloudflare.com; " +
       "style-src 'self' 'unsafe-inline'; " +
-      "img-src 'self' https://t.alcy.cc https://q1.qlogo.cn https: data:; " +
+      "img-src 'self' https://t.alcy.cc https://q1.qlogo.cn https: data: blob:; " +
       "object-src 'none'; " +
       "frame-ancestors 'none';",
   );

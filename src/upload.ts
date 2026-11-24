@@ -8,6 +8,7 @@ import type { ChunkTask, Env, RuntimeConfig } from './types';
 import { getConfig } from './config';
 import { readExpireInput, resolveExpire } from './expire';
 import { assertUploadAllowed } from './auth';
+import { assertTurnstile } from './turnstile';
 import {
   checkRateLimit,
   claimCode,
@@ -16,8 +17,10 @@ import {
   deleteChunkTask,
   getChunkTask,
   getFileByCode,
+  getStorageUsed,
   insertChunkTask,
   insertFile,
+  isCodeReserved,
   isCodeTaken,
   listChunkParts,
   releaseCode,
@@ -44,6 +47,7 @@ import {
   generateCode,
   getClientIp,
   isValidCode,
+  mbOf,
   sanitizeFilename,
   summarize,
 } from './utils';
@@ -81,6 +85,48 @@ async function prepareUpload(c: Ctx, env: Env): Promise<RuntimeConfig> {
     throw new HttpError(429, '上传过于频繁，请稍后再试');
   }
   return config;
+}
+
+/** 全站配额：maxTotalStorage=0 表示不限制 */
+async function assertStorageQuota(env: Env, config: RuntimeConfig, incoming: number): Promise<void> {
+  if (config.maxTotalStorage <= 0) return;
+  const used = await getStorageUsed(env.DB);
+  if (used + incoming > config.maxTotalStorage) {
+    throw new HttpError(
+      507,
+      `存储配额不足（已用 ${mbOf(used)}MB / 上限 ${mbOf(config.maxTotalStorage)}MB）`,
+    );
+  }
+}
+
+/** 批量分配连号取件码（多文件上传用），失败回滚已占用 */
+export async function allocateCodeRun(env: Env, count: number): Promise<string[]> {
+  if (!Number.isInteger(count) || count < 1 || count > 20) {
+    throw new HttpError(422, '数量需为 1 到 20 的整数');
+  }
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const start = Math.floor(Math.random() * (10000 - count + 1));
+    const codes = Array.from({ length: count }, (_, i) => String(start + i).padStart(4, '0'));
+    const claimed: string[] = [];
+    let ok = true;
+    for (const code of codes) {
+      if ((await isCodeTaken(env.DB, code)) || !(await claimCode(env.DB, code))) {
+        ok = false;
+        break;
+      }
+      claimed.push(code);
+    }
+    if (ok) return codes;
+    await Promise.all(claimed.map((code) => releaseCode(env.DB, code)));
+  }
+  throw new HttpError(500, '无法分配足够的连号取件码，请稍后重试');
+}
+
+/** 认领批量接口预占的码（已存在于占用表，不再重复抢占） */
+async function adoptCode(rawCode: string, env: Env): Promise<string> {
+  if (!isValidCode(rawCode)) throw new HttpError(400, '取件码必须为 4 位数字');
+  if (!(await isCodeReserved(env.DB, rawCode))) throw new HttpError(409, '取件码未被预占或已失效');
+  return rawCode;
 }
 
 /**
@@ -121,7 +167,11 @@ export async function uploadFile(c: Ctx, env: Env): Promise<UploadResult> {
   if (!knownLength) throw new HttpError(411, '上传必须带 Content-Length（分块传输请改走分片接口）');
   if (declared > config.maxSize) throw new HttpError(413, `文件过大，最大 ${Math.floor(config.maxSize / 1024 / 1024)}MB`);
 
-  const code = await allocateCode((query.code ?? '').trim(), env);
+  await assertTurnstile(c, env, config.turnstileEnabled);
+  await assertStorageQuota(env, config, declared);
+
+  const requested = (query.code ?? '').trim();
+  const code = query.reserved === '1' ? await adoptCode(requested, env) : await allocateCode(requested, env);
   const key = fileKey(code);
   const clientIp = getClientIp(c.req.raw.headers);
 
@@ -154,6 +204,10 @@ export async function uploadText(c: Ctx, env: Env): Promise<TextResult> {
 
   const size = new TextEncoder().encode(text).length;
   if (size > MAX_TEXT_BYTES) throw new HttpError(400, `文本过长，最大支持 ${Math.floor(MAX_TEXT_BYTES / 1024)}KB`);
+
+  const formToken = typeof body['cf-turnstile-response'] === 'string' ? body['cf-turnstile-response'] : undefined;
+  await assertTurnstile(c, env, config.turnstileEnabled, formToken);
+  await assertStorageQuota(env, config, size);
 
   const expire = resolveExpire(readExpireInput(body), config);
   const code = await allocateCode(typeof body['code'] === 'string' ? body['code'].trim() : '', env);
@@ -194,8 +248,12 @@ export async function chunkInit(c: Ctx, env: Env): Promise<ChunkInitResult> {
   const totalChunks = Math.ceil(size / CHUNK_SIZE);
   if (Number(body.total_chunks) !== totalChunks) throw new HttpError(422, `分片数量应为 ${totalChunks}`);
 
+  await assertTurnstile(c, env, config.turnstileEnabled);
+  await assertStorageQuota(env, config, size);
+
   const expire = resolveExpire(readExpireInput(body), config);
-  const code = await allocateCode(typeof body.code === 'string' ? body.code.trim() : '', env);
+  const requested = typeof body.code === 'string' ? body.code.trim() : '';
+  const code = body.reserved === true ? await adoptCode(requested, env) : await allocateCode(requested, env);
   const now = new Date().toISOString();
   const task: ChunkTask = {
     uploadId: crypto.randomUUID(),

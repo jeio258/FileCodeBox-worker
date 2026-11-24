@@ -7,7 +7,7 @@ import type { Env } from './types';
 import { initDB, cleanupRateLimits, takeExpiredFiles } from './db';
 import { cleanupOrphanObjects } from './files';
 import { cleanupStaleChunks, cleanupUnusedCodes } from './upload';
-import { RATE_WINDOW_MS, fileKey } from './utils';
+import { RATE_WINDOW_MS, fileKey, thumbKey } from './utils';
 import { removeObjects } from './storage';
 
 export interface MaintenanceReport {
@@ -36,7 +36,12 @@ export async function runMaintenance(env: Env): Promise<MaintenanceReport> {
   await initDB(env.DB);
 
   const expired = await step(errors, 'expired', () => takeExpiredFiles(env.DB), []);
-  await step(errors, 'expiredObjects', () => removeObjects(env.FILE_STORE, expired.map((f) => fileKey(f.code))), undefined);
+  await step(
+    errors,
+    'expiredObjects',
+    () => removeObjects(env.FILE_STORE, expired.flatMap((f) => [fileKey(f.code), thumbKey(f.code)])),
+    undefined,
+  );
 
   const orphans = await step(errors, 'orphans', () => cleanupOrphanObjects(env), { scanned: 0, removed: 0 });
   const rateLimits = await step(errors, 'rateLimits', () => cleanupRateLimits(env.DB, RATE_WINDOW_MS), 0);

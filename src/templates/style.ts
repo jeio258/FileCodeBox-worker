@@ -815,4 +815,11 @@ a.fname:hover { text-decoration: underline; text-underline-offset: 2px; }
     transition: none;
   }
 }
+
+/* ---- 缩略图 / 批量结果 / 设置页 ---- */
+.thumb { display:block; max-width:100%; max-height:320px; margin:0 auto 12px; border-radius:12px; border:1px solid var(--color-rule); }
+.batch-link { display:block; padding:8px 12px; margin-top:6px; border-radius:8px; background:var(--color-paper-3); color:var(--color-ink); text-decoration:none; font-size:13px; font-family:var(--font-mono); }
+.batch-link:hover { background:var(--color-accent-soft); }
+.form-success { color: var(--color-accent); text-align:center; margin-bottom:14px; font-size:14px; }
+.check-line { display:flex; align-items:center; gap:8px; font-weight:400; }
 `;

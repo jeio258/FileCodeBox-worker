@@ -16,7 +16,7 @@ import type {
 } from './types';
 
 /** 表结构版本：增删表/列时必须 +1；ensureSchema 据此决定是否补建 */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 const SCHEMA_KEY = 'schema_version';
 
 // ===================== 行 → 领域模型 =====================
@@ -33,6 +33,7 @@ const toFile = (row: FileRow): FileRecord => ({
   createdAt: row.created_at,
   clientIp: row.ip,
   isText: row.is_text === 1,
+  hasThumb: row.has_thumb === 1,
 });
 
 const toChunkTask = (row: ChunkTaskRow): ChunkTask => ({
@@ -66,7 +67,8 @@ const SCHEMA_STATEMENTS = [
     max_downloads INTEGER DEFAULT -1,
     created_at TEXT NOT NULL,
     ip TEXT DEFAULT '',
-    is_text INTEGER DEFAULT 0
+    is_text INTEGER DEFAULT 0,
+    has_thumb INTEGER DEFAULT 0
   )`,
   'CREATE INDEX IF NOT EXISTS idx_fc_code ON fc_files(code)',
   'CREATE INDEX IF NOT EXISTS idx_fc_expire ON fc_files(expire_at)',
@@ -117,6 +119,7 @@ export async function initDB(db: D1Database): Promise<void> {
   // 列已存在时 SQLite 报 duplicate column，忽略即可
   const migrate = (sql: string) => db.prepare(sql).run().catch(() => {});
   await migrate('ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0');
+  await migrate('ALTER TABLE fc_files ADD COLUMN has_thumb INTEGER DEFAULT 0');
   await migrate("ALTER TABLE fc_chunk_uploads ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
   await migrate('ALTER TABLE fc_chunk_uploads ADD COLUMN r2_upload_id TEXT');
   await migrate(
@@ -194,6 +197,21 @@ export async function incrementDownload(db: D1Database, code: string): Promise<b
 }
 
 /** 删除记录并释放取件码 */
+/** 全站已用存储（以 D1 实际记录求和，避免计数器漂移；缩略图不计入） */
+export async function getStorageUsed(db: D1Database): Promise<number> {
+  const row = await db.prepare('SELECT COALESCE(SUM(size),0) AS used FROM fc_files').first<{ used: number }>();
+  return row?.used ?? 0;
+}
+
+/** 标记文件已有缩略图（不可重复设置） */
+export async function markFileThumb(db: D1Database, code: string): Promise<boolean> {
+  const result = await db
+    .prepare('UPDATE fc_files SET has_thumb = 1 WHERE code = ? AND has_thumb = 0')
+    .bind(code)
+    .run();
+  return result.meta.changes > 0;
+}
+
 export async function deleteFileRecord(db: D1Database, id: number): Promise<void> {
   const row = await db.prepare('SELECT code FROM fc_files WHERE id = ?').bind(id).first<{ code: string }>();
   if (!row) return;
@@ -250,6 +268,12 @@ export async function isCodeTaken(db: D1Database, code: string): Promise<boolean
 export async function claimCode(db: D1Database, code: string): Promise<boolean> {
   const result = await db.prepare('INSERT OR IGNORE INTO fc_used_codes(code) VALUES (?)').bind(code).run();
   return result.meta.changes === 1;
+}
+
+/** 取件码是否已被预占（存在于占用表） */
+export async function isCodeReserved(db: D1Database, code: string): Promise<boolean> {
+  const row = await db.prepare('SELECT 1 FROM fc_used_codes WHERE code = ?').bind(code).first();
+  return row !== null;
 }
 
 export async function releaseCode(db: D1Database, code: string): Promise<void> {

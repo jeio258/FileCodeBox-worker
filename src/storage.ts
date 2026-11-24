@@ -1,6 +1,6 @@
 /** 存储层：全部 R2 读写。不涉及 D1 与 HTTP。 */
 
-import { FILE_PREFIX } from './utils';
+import { FILE_PREFIX, thumbKey } from './utils';
 
 /** 文本等小对象直接写入 */
 export async function putObject(
@@ -13,6 +13,16 @@ export async function putObject(
     httpMetadata: { contentType: meta.contentType },
     customMetadata: { filename: meta.filename },
   });
+}
+
+export async function putThumbObject(bucket: R2Bucket, code: string, data: ArrayBuffer): Promise<void> {
+  await bucket.put(thumbKey(code), data, {
+    httpMetadata: { contentType: 'image/webp' },
+  });
+}
+
+export async function readThumbObject(bucket: R2Bucket, code: string): Promise<R2ObjectBody | null> {
+  return bucket.get(thumbKey(code));
 }
 
 export async function getObject(bucket: R2Bucket, key: string): Promise<R2ObjectBody | null> {

@@ -182,6 +182,8 @@ export interface HomeOptions {
   /** 当前生效的单文件上限，前端据此拦截超限文件 */
   maxFileSize: number;
   defaultExpireDays: number;
+  /** 开启人机校验时渲染 widget 的站点键；空串表示关闭 */
+  turnstileSiteKey?: string;
 }
 
 export function homePage(opts: HomeOptions): string {
@@ -210,7 +212,7 @@ ${codeBoxes({ groupId: 'pickupBoxes', hiddenId: 'pickupCode', name: 'code', auto
             <span class="dz-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17V5"/><path d="m7 10 5-5 5 5"/><path d="M5 19h14"/></svg></span>
             <span class="dz-title">点击选择，或拖拽文件到此处</span>
             <span class="dz-hint">支持直接粘贴 · 单个文件上限 ${escapeHtml(formatFileSize(maxBytes))}</span>
-            <input type="file" name="file" id="fileInput" class="dz-input">
+            <input type="file" name="file" id="fileInput" class="dz-input" multiple>
           </div>
           <div class="file-chips" id="fileList"></div>
           <p class="upload-notice" id="uploadNotice" role="alert" hidden></p>
@@ -237,12 +239,14 @@ ${codeBoxes({ groupId: 'fileCodeBoxes', hiddenId: 'fileCode', name: 'code' })}
         <div class="upload-progress" id="uploadProgress"><div class="upload-progress-bar" id="uploadProgressBar"></div></div>
         <div class="upload-status" id="uploadStatus"></div>
         <div class="progress-meta" id="uploadMeta" hidden></div>
+        ${opts.turnstileSiteKey ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(opts.turnstileSiteKey)}" data-size="flexible"></div>` : ''}
         <button type="submit" id="submitBtn" class="btn btn-primary">发件并获取取件码</button>
       </form>
     </div>
 
     <div id="tab-text" class="tab-panel">
       <form action="/api/upload/text" method="post" onsubmit="return prepareTextSubmit(event)">
+        <input type="hidden" name="cf-turnstile-response" id="textTurnstileToken">
         <div class="input-group">
           <textarea name="text" id="textInput" class="input" placeholder="粘贴或输入要分享的文本内容…" required oninput="updateTextBytes(this)"></textarea>
           <div class="progress-meta"><span id="textBytes">0 B</span><span>上限 512 KB</span></div>
@@ -274,7 +278,7 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
     var CHUNK_THRESHOLD = ${opts.chunkThreshold};
     var CHUNK_SIZE = ${CHUNK_SIZE};
     var MAX_TEXT_BYTES = ${MAX_TEXT_BYTES};
-    var pendingFile = null;
+    var pendingFiles = [];
 
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(function (t) {
@@ -307,7 +311,7 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
     }
 
     function overLimit() {
-      return pendingFile && pendingFile.size > maxBytes();
+      return pendingFiles.some(function (f) { return f.size > maxBytes(); });
     }
 
     // 超限文件允许留在列表里（否则用户不知道被丢了哪个），但标红并在提交时拦下
@@ -317,8 +321,8 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
       return true;
     }
 
-    function setFile(file) {
-      pendingFile = file || null;
+    function setFiles(list) {
+      pendingFiles = Array.prototype.slice.call(list || []);
       renderChips();
       reportOverLimit();
     }
@@ -327,24 +331,29 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
       var box = document.getElementById('fileList');
       if (!box) return;
       box.textContent = '';
-      if (!pendingFile) return;
-      var over = overLimit();
-      var chip = document.createElement('div');
-      chip.className = over ? 'file-chip chip-over' : 'file-chip';
-      var name = document.createElement('span');
-      name.className = 'chip-name';
-      name.textContent = pendingFile.name;
-      var size = document.createElement('span');
-      size.className = 'chip-size';
-      size.textContent = over ? fmtBytes(pendingFile.size) + ' · 超上限' : fmtBytes(pendingFile.size);
-      var rm = document.createElement('button');
-      rm.type = 'button';
-      rm.className = 'chip-remove';
-      rm.setAttribute('aria-label', '移除 ' + pendingFile.name);
-      rm.textContent = '×';
-      rm.onclick = function () { setFile(null); };
-      chip.appendChild(name); chip.appendChild(size); chip.appendChild(rm);
-      box.appendChild(chip);
+      pendingFiles.forEach(function (file, idx) {
+        var over = file.size > maxBytes();
+        var chip = document.createElement('div');
+        chip.className = over ? 'file-chip chip-over' : 'file-chip';
+        var name = document.createElement('span');
+        name.className = 'chip-name';
+        name.textContent = file.name;
+        var size = document.createElement('span');
+        size.className = 'chip-size';
+        size.textContent = over ? fmtBytes(file.size) + ' · 超上限' : fmtBytes(file.size);
+        var rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'chip-remove';
+        rm.setAttribute('aria-label', '移除 ' + file.name);
+        rm.textContent = '×';
+        rm.onclick = function () {
+          pendingFiles.splice(idx, 1);
+          renderChips();
+          reportOverLimit();
+        };
+        chip.appendChild(name); chip.appendChild(size); chip.appendChild(rm);
+        box.appendChild(chip);
+      });
     }
 
     function initDropZone() {
@@ -362,10 +371,10 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
         dz.addEventListener(ev, function (e) { e.preventDefault(); dz.removeAttribute('data-dragging'); });
       });
       dz.addEventListener('drop', function (e) {
-        if (e.dataTransfer && e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+        if (e.dataTransfer && e.dataTransfer.files.length) setFiles(e.dataTransfer.files);
       });
       input.addEventListener('change', function () {
-        if (input.files.length) setFile(input.files[0]);
+        if (input.files.length) setFiles(input.files);
         input.value = '';
       });
       // 关闭浏览器把拖入的图片直接导航走
@@ -374,7 +383,7 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
       });
       window.addEventListener('paste', function (e) {
         var files = e.clipboardData && e.clipboardData.files;
-        if (files && files.length) { e.preventDefault(); setFile(files[0]); }
+        if (files && files.length) { e.preventDefault(); setFiles(files); }
       });
     }
 
@@ -440,12 +449,18 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
       });
     }
 
-    function uploadOne(file, params, code, onProgress) {
+    function turnstileToken() {
+      return (window.turnstile && window.turnstile.getResponse && window.turnstile.getResponse()) || '';
+    }
+
+    function uploadOne(file, params, code, onProgress, reserved) {
       return new Promise(function (resolve, reject) {
         var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/upload?' + queryOf(params) + '&code=' + encodeURIComponent(code || ''));
+        xhr.open('POST', '/api/upload?' + queryOf(params) + '&code=' + encodeURIComponent(code || '') + (reserved ? '&reserved=1' : ''));
         xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
         xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+        var token = turnstileToken();
+        if (token) xhr.setRequestHeader('X-Turnstile-Token', token);
         xhr.upload.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded, e.total); };
         xhr.onload = function () {
           var data = null;
@@ -467,6 +482,8 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
       return new Promise(function (resolve, reject) {
         var xhr = new XMLHttpRequest();
         xhr.open('PUT', '/api/upload/chunk/' + s.upload_id + '/' + n);
+        var token = turnstileToken();
+        if (token) xhr.setRequestHeader('X-Turnstile-Token', token);
         xhr.setRequestHeader('Content-Type', 'application/octet-stream');
         xhr.upload.onprogress = function (e) { if (e.lengthComputable) onLoaded(n, e.loaded); };
         xhr.onload = function () {
@@ -533,7 +550,7 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
     }
     window.addEventListener('pagehide', abortLiveChunks);
 
-    function chunkUpload(file, params, code, onProgress) {
+    function chunkUpload(file, params, code, onProgress, reserved) {
       var handle = '';
       return fetchJson('/api/upload/chunk/init', {
         method: 'POST',
@@ -544,6 +561,7 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
           total_chunks: Math.ceil(file.size / CHUNK_SIZE),
           mime_type: file.type || 'application/octet-stream',
           code: code || '',
+          reserved: Boolean(reserved),
           expire_style: params.expire_style,
           expire_value: params.expire_value,
           max_downloads: params.max_downloads
@@ -583,14 +601,41 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
       });
     }
 
-    function sendOne(file, params, code, onProgress) {
-      if (file.size > CHUNK_THRESHOLD) return chunkUpload(file, params, code, onProgress);
-      return uploadOne(file, params, code, onProgress);
+    // 图片在浏览器端生成缩略图（≤128KB webp），失败不影响主上传
+    function uploadThumb(file, code) {
+      if (!/^image\\//.test(file.type || '')) return Promise.resolve();
+      return new Promise(function (resolve) {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function () {
+          var maxEdge = 1024;
+          var scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+          var w = Math.max(1, Math.round(img.width * scale));
+          var h = Math.max(1, Math.round(img.height * scale));
+          var canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(url);
+          canvas.toBlob(function (blob) {
+            if (!blob || blob.size > 128 * 1024) return resolve();
+            fetch('/api/thumb/' + encodeURIComponent(code), { method: 'POST', body: blob })
+              .catch(function () {})
+              .then(resolve);
+          }, 'image/webp', 0.82);
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); resolve(); };
+        img.src = url;
+      });
+    }
+
+    function sendOne(file, params, code, onProgress, reserved) {
+      if (file.size > CHUNK_THRESHOLD) return chunkUpload(file, params, code, onProgress, reserved);
+      return uploadOne(file, params, code, onProgress, reserved);
     }
 
     function handleUpload(e) {
       e.preventDefault();
-      if (!pendingFile) { notice('请先选择文件'); return false; }
+      if (!pendingFiles.length) { notice('请先选择文件'); return false; }
       if (reportOverLimit()) return false;
       notice('');
 
@@ -599,26 +644,68 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
       var bar = document.getElementById('uploadProgressBar');
       var status = document.getElementById('uploadStatus');
       var meta = document.getElementById('uploadMeta');
+      var hiddenCode = document.getElementById('fileCode');
+      var custom = hiddenCode ? hiddenCode.value.trim() : '';
+      var files = pendingFiles.slice();
+      var params = uploadParams();
 
       btn.disabled = true;
       btn.textContent = '上传中…';
       wrap.style.display = 'block';
       meta.hidden = false;
 
-      function onProgress(loaded, total, extra) {
-        var pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
-        bar.style.width = pct + '%';
-        status.style.display = 'block';
-        status.textContent = '上传中 ' + pct + '%' + (extra ? ' · ' + extra : '');
-        meta.textContent = fmtBytes(loaded) + ' / ' + fmtBytes(total);
+      var token = turnstileToken();
+      var codesPromise;
+      if (files.length > 1) {
+        if (custom) notice('多文件上传时忽略自定义取件码');
+        codesPromise = fetchJson('/api/codes/' + files.length)
+          .then(function (r) { return r.codes; })
+          .catch(function () { return files.map(function () { return ''; }); });
+      } else {
+        codesPromise = Promise.resolve([custom]);
       }
-      onProgress(0, pendingFile.size);
 
-      var hiddenCode = document.getElementById('fileCode');
-      sendOne(pendingFile, uploadParams(), hiddenCode ? hiddenCode.value.trim() : '', onProgress)
-        .then(function (data) {
-          status.textContent = '上传完成，跳转中…';
-          window.location.href = '/r/' + data.code;
+      codesPromise
+        .then(function (codes) {
+          var results = [];
+          var chain = Promise.resolve();
+          files.forEach(function (file, idx) {
+            chain = chain.then(function () {
+              btn.textContent = '上传中 ' + (idx + 1) + '/' + files.length + '…';
+              return sendOne(file, params, codes[idx] || '', function (loaded, total, extra) {
+                var pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+                bar.style.width = pct + '%';
+                status.style.display = 'block';
+                status.textContent = '第 ' + (idx + 1) + '/' + files.length + ' 个：' + pct + '%' + (extra ? ' · ' + extra : '');
+                meta.textContent = fmtBytes(loaded) + ' / ' + fmtBytes(total);
+              }, files.length > 1).then(function (data) {
+                results.push(data);
+                return uploadThumb(file, data.code);
+              });
+            });
+          });
+          return chain.then(function () { return results; });
+        })
+        .then(function (results) {
+          if (results.length === 1) {
+            status.textContent = '上传完成，跳转中…';
+            window.location.href = '/r/' + results[0].code;
+            return;
+          }
+          bar.style.width = '100%';
+          status.textContent = '全部完成：' + results.length + ' 个文件';
+          meta.hidden = true;
+          var box = document.getElementById('fileList');
+          box.textContent = '';
+          results.forEach(function (r) {
+            var a = document.createElement('a');
+            a.className = 'batch-link';
+            a.href = '/r/' + r.code;
+            a.textContent = r.code + ' · ' + r.filename;
+            box.appendChild(a);
+          });
+          btn.disabled = false;
+          btn.textContent = '发件并获取取件码';
         })
         .catch(function (err) {
           btn.disabled = false;
@@ -638,6 +725,8 @@ ${codeBoxes({ groupId: 'textCodeBoxes', hiddenId: 'textCode', name: 'code' })}
     }
 
     function prepareTextSubmit(e) {
+      var el = document.getElementById('textTurnstileToken');
+      if (el) el.value = turnstileToken();
       var el = document.getElementById('textInput');
       var bytes = el ? new TextEncoder().encode(el.value).length : 0;
       if (bytes > MAX_TEXT_BYTES) {
@@ -808,7 +897,7 @@ export function filePage(file: FileRecord, baseUrl: string): string {
         ${pageHeader('取件')}
         <div class="share-title">${escapeHtml(file.filename)}</div>
         <div class="command-box" style="align-items:center;justify-content:center">
-          ${fileIconSvg()}
+          ${file.hasThumb ? `<img class="thumb" src="/api/thumb/${file.code}" alt="预览" loading="lazy">` : fileIconSvg()}
           <a href="/api/download/${file.code}" class="btn btn-primary btn-auto">下载文件</a>
         </div>
         ${fileMeta(file)}`;
@@ -855,7 +944,13 @@ interface Filters {
   sort: string;
 }
 
-export function adminPanel(files: FileRecord[], total: number, page: number, filters: Filters): string {
+export function adminPanel(
+  files: FileRecord[],
+  total: number,
+  page: number,
+  filters: Filters,
+  storage?: { used: number; limit: number },
+): string {
   const totalPages = Math.ceil(total / 50);
 
   const rows = files
@@ -892,7 +987,17 @@ export function adminPanel(files: FileRecord[], total: number, page: number, fil
   const filtered = filters.keyword || filters.dateFrom || filters.dateTo || filters.sort !== 'newest';
 
   const content = `
-    ${pageHeader('管理面板', `共 ${total} 个文件`, '<a href="/">首页</a><a href="/admin/logout">退出</a>')}
+    ${pageHeader(
+      '管理面板',
+      `共 ${total} 个文件${
+        storage
+          ? storage.limit > 0
+            ? ` · 已用 ${formatFileSize(storage.used)} / 上限 ${formatFileSize(storage.limit)}`
+            : ` · 已用 ${formatFileSize(storage.used)}（不限总量）`
+          : ''
+      }`,
+      '<a href="/">首页</a><a href="/admin/settings">设置</a><a href="/admin/logout">退出</a>',
+    )}
 
     <form method="get" action="/admin" class="filter-bar">
       <div class="input-group grow">
@@ -928,4 +1033,62 @@ export function adminPanel(files: FileRecord[], total: number, page: number, fil
       ${page < totalPages ? `<a href="${pageUrl(page + 1)}">下一页 &rarr;</a>` : ''}
     </div>`;
   return layout('管理面板', card(content), true, true);
+}
+
+
+// ===================== 系统设置页 =====================
+
+export interface SettingsInput {
+  config: {
+    maxSize: number;
+    defaultExpireDays: number;
+    openUpload: boolean;
+    maxTotalStorage: number;
+    turnstileEnabled: boolean;
+  };
+  used: number;
+  turnstileReady: boolean;
+  varsMaxSize: number;
+}
+
+export function adminSettingsPage(o: SettingsInput, saved = false): string {
+  const mb = (bytes: number) => (bytes > 0 ? String(Math.round((bytes / 1048576) * 100) / 100) : '');
+  const content = `
+    <div class="header">
+      <div>
+        <h1>系统设置</h1>
+        <p>保存后立即生效，无需重新部署</p>
+      </div>
+      <div class="header-actions">
+        <a href="/">首页</a>
+        <a href="/admin">文件</a>
+        <a href="/admin/logout">退出</a>
+      </div>
+    </div>
+    ${saved ? '<div class="form-success">已保存</div>' : ''}
+    <form method="post" action="/admin/settings">
+      <div class="input-group">
+        <label>单文件上限（MB）</label>
+        <input type="number" name="maxFileSizeMb" class="input" min="0.1" step="0.1" value="${mb(o.config.maxSize)}">
+        <div class="hint">清空或非法值将保持当前值；部署变量值为 ${mb(o.varsMaxSize)} MB</div>
+      </div>
+      <div class="input-group">
+        <label>默认有效期（天）</label>
+        <input type="number" name="defaultExpireDays" class="input" min="1" max="3650" value="${o.config.defaultExpireDays}">
+      </div>
+      <div class="input-group">
+        <label>全站总占用上限（MB）</label>
+        <input type="number" name="maxTotalStorageMb" class="input" min="0" step="0.1" value="${mb(o.config.maxTotalStorage)}" placeholder="0 = 不限制">
+        <div class="hint">当前已用 ${formatFileSize(o.used)}；超限时新上传返回 507</div>
+      </div>
+      <div class="input-group">
+        <label class="check-line"><input type="checkbox" name="openUpload" value="1"${o.config.openUpload ? ' checked' : ''}> 允许游客上传</label>
+      </div>
+      <div class="input-group">
+        <label class="check-line"><input type="checkbox" name="turnstileEnabled" value="1"${o.config.turnstileEnabled ? ' checked' : ''}${o.turnstileReady ? '' : ' disabled'}> 上传需要人机校验（Turnstile）</label>
+        <div class="hint">${o.turnstileReady ? '已配置站点键与密钥' : '未配置 TURNSTILE_SITE_KEY / TURNSTILE_SECRET，暂不可开启'}</div>
+      </div>
+      <button type="submit" class="btn btn-primary">保存设置</button>
+    </form>`;
+  return layout('系统设置', content, true, true);
 }

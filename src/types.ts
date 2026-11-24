@@ -13,6 +13,7 @@ export interface FileRow {
   created_at: string;
   ip: string;
   is_text: number;
+  has_thumb: number;
 }
 
 /** fc_chunk_uploads 行 */
@@ -52,6 +53,7 @@ export interface FileRecord {
   createdAt: string;
   clientIp: string;
   isText: boolean;
+  hasThumb: boolean;
 }
 
 /** 分片上传任务领域模型 */
@@ -97,6 +99,9 @@ export interface Env {
   ADMIN_PASSWORD?: string;
   MAX_FILE_SIZE?: string;
   DEFAULT_EXPIRE_DAYS?: string;
+  /** Turnstile 站点键（前端渲染）与密钥（服务端校验），两者都配置才可用 */
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET?: string;
 }
 
 /** env + D1 设置合并后的运行配置 */
@@ -104,6 +109,10 @@ export interface RuntimeConfig {
   maxSize: number;
   defaultExpireDays: number;
   openUpload: boolean;
+  /** 全站总占用上限（字节，0 = 不限制） */
+  maxTotalStorage: number;
+  /** 游客上传是否要求 Turnstile（需同时配置站点/密钥） */
+  turnstileEnabled: boolean;
 }
 
 /** 过期参数（query / form / JSON 统一形状） */

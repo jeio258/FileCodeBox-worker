@@ -18,11 +18,22 @@ export const CONFIG_KEYS = {
   maxSize: 'max_file_size',
   defaultExpireDays: 'default_expire_days',
   openUpload: 'open_upload',
+  maxTotalStorage: 'max_total_storage',
+  turnstileEnabled: 'turnstile_enabled',
   /** D1 侧密码哈希：Secret 缺失时兜底 */
   passwordHash: 'admin_password_hash',
 } as const;
 
-const CONFIG_READ_KEYS = [CONFIG_KEYS.maxSize, CONFIG_KEYS.defaultExpireDays, CONFIG_KEYS.openUpload];
+const CONFIG_READ_KEYS = [
+  CONFIG_KEYS.maxSize,
+  CONFIG_KEYS.defaultExpireDays,
+  CONFIG_KEYS.openUpload,
+  CONFIG_KEYS.maxTotalStorage,
+  CONFIG_KEYS.turnstileEnabled,
+];
+
+/** 总占用上限的硬上限（10TB），防误配成天文数字 */
+const MAX_TOTAL_STORAGE = 10 * 1024 ** 4;
 
 export async function getConfig(env: Env): Promise<RuntimeConfig> {
   const settings = await getSettings(env.DB, CONFIG_READ_KEYS).catch(() => ({}) as Record<string, string>);
@@ -39,6 +50,8 @@ export async function getConfig(env: Env): Promise<RuntimeConfig> {
       MAX_CONFIG_EXPIRE_DAYS,
     ),
     openUpload: (settings[CONFIG_KEYS.openUpload] ?? '1') !== '0',
+    maxTotalStorage: Math.min(toBoundedInt(settings[CONFIG_KEYS.maxTotalStorage], 0, MAX_TOTAL_STORAGE), MAX_TOTAL_STORAGE),
+    turnstileEnabled: (settings[CONFIG_KEYS.turnstileEnabled] ?? '0') === '1',
   };
 }
 
@@ -59,6 +72,15 @@ export async function updateConfig(env: Env, patch: Record<string, unknown>): Pr
     const open = patch.openUpload === true || patch.openUpload === '1' || patch.openUpload === 'true';
     writes.push(setSetting(env.DB, CONFIG_KEYS.openUpload, open ? '1' : '0'));
   }
+  if (patch.maxTotalStorage !== undefined) {
+    const raw = Number(patch.maxTotalStorage);
+    const value = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), MAX_TOTAL_STORAGE) : 0;
+    writes.push(setSetting(env.DB, CONFIG_KEYS.maxTotalStorage, String(value)));
+  }
+  if (patch.turnstileEnabled !== undefined) {
+    const on = patch.turnstileEnabled === true || patch.turnstileEnabled === '1' || patch.turnstileEnabled === 'true';
+    writes.push(setSetting(env.DB, CONFIG_KEYS.turnstileEnabled, on ? '1' : '0'));
+  }
   await Promise.all(writes);
   return getConfig(env);
 }
@@ -69,5 +91,7 @@ export function configToApi(config: RuntimeConfig) {
     openUpload: config.openUpload ? '1' : '0',
     maxFileSize: String(config.maxSize),
     defaultExpireDays: String(config.defaultExpireDays),
+    maxTotalStorage: String(config.maxTotalStorage),
+    turnstileEnabled: config.turnstileEnabled ? '1' : '0',
   };
 }

@@ -5,18 +5,21 @@
 
 import type { Hono } from 'hono';
 import type { Env, FileFilters } from '../types';
-import { getConfig } from '../config';
-import { getFileByCode, getFileById, initDB, listFiles, takeExpiredFiles } from '../db';
-import { isAdminAuthed, isAdminPasswordConfigured, login, logout } from '../auth';
-import { buildDownloadResponse, deleteStoredFile, resolveShare } from '../files';
-import { chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, uploadFile, uploadText } from '../upload';
+import { getConfig, updateConfig } from '../config';
+import { getFileByCode, getFileById, getStorageUsed, initDB, listFiles, takeExpiredFiles } from '../db';
+import { assertUploadAllowed, isAdminAuthed, isAdminPasswordConfigured, login, logout } from '../auth';
+import { buildDownloadResponse, deleteStoredFile, readThumb, resolveShare, saveThumb } from '../files';
+import { allocateCodeRun, chunkAbort, chunkComplete, chunkInit, chunkPut, chunkStatus, uploadFile, uploadText } from '../upload';
 import { removeObjects } from '../storage';
-import { CHUNK_SIZE, PLAIN_UPLOAD_LIMIT, fileKey, getBaseUrl, getClientIp, isValidCode } from '../utils';
+import { CHUNK_SIZE, HttpError, PLAIN_UPLOAD_LIMIT, RATE_WINDOW_MS, fileKey, getBaseUrl, getClientIp, isValidCode, toInt } from '../utils';
+import { checkRateLimit } from '../db';
+import { turnstileConfigured, turnstileSiteKey } from '../turnstile';
 import { generateQRCodeGIF } from '../qr';
 import { STYLE } from '../templates/style';
 import {
   adminLoginPage,
   adminPanel,
+  adminSettingsPage,
   errorPage,
   filePage,
   homePage,
@@ -39,6 +42,8 @@ async function home(c: Ctx): Promise<Response> {
       chunkThreshold: Math.min(config.maxSize, PLAIN_UPLOAD_LIMIT),
       maxFileSize: config.maxSize,
       defaultExpireDays: config.defaultExpireDays,
+      turnstileSiteKey:
+        config.turnstileEnabled && turnstileConfigured(c.env) ? turnstileSiteKey(c.env) : '',
     }),
   );
 }
@@ -66,7 +71,7 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
     const obj = await c.env.FILE_STORE.get('bg.webp');
     if (!obj) return new Response('Not Found', { status: 404 });
     return new Response(obj.body, {
-      headers: { 'Content-Type': 'image/webp', 'Cache-Control': IMMUTABLE },
+      headers: { 'Content-Type': 'image/webp', 'Cache-Control': IMMUTABLE, 'X-Content-Type-Options': 'nosniff' },
     });
   });
 
@@ -189,6 +194,39 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
     });
   });
 
+  // ===================== 批量取件码 / 缩略图 =====================
+
+  app.get(
+    '/api/codes/:count',
+    json(async (c) => {
+      const config = await getConfig(c.env);
+      await assertUploadAllowed(c, config);
+      // 取件码只有 1 万个，批量接口用更紧的独立配额，避免被用来耗尽码空间
+      const ip = getClientIp(c.req.raw.headers);
+      if (!(await checkRateLimit(c.env.DB, 'codes_ratelimit', ip, 3, RATE_WINDOW_MS))) {
+        throw new HttpError(429, '申请取件码过于频繁，请稍后再试');
+      }
+      return c.json({ codes: await allocateCodeRun(c.env, toInt(pathParam(c, 'count'), 0)) });
+    }),
+  );
+
+  app.post(
+    '/api/thumb/:code',
+    json(async (c) => {
+      const data = await c.req.arrayBuffer();
+      await saveThumb(c.env, pathParam(c, 'code'), data);
+      return c.json({ ok: true });
+    }),
+  );
+
+  app.get('/api/thumb/:code', async (c) => {
+    const obj = await readThumb(c.env, pathParam(c, 'code'));
+    if (!obj) return new Response('Not Found', { status: 404 });
+    return new Response(obj.body, {
+      headers: { 'Content-Type': 'image/webp', 'Cache-Control': IMMUTABLE, 'X-Content-Type-Options': 'nosniff' },
+    });
+  });
+
   // ===================== 管理后台 =====================
 
   app.get('/admin', async (c) => {
@@ -198,7 +236,41 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
     const page = Math.max(1, Number(c.req.query('page')) || 1);
     const filters = readFilters(c);
     const { files, total } = await listFiles(c.env.DB, page, PAGE_SIZE, filters);
-    return c.html(adminPanel(files, total, page, filters));
+    const config = await getConfig(c.env);
+    const used = await getStorageUsed(c.env.DB).catch(() => 0);
+    return c.html(adminPanel(files, total, page, filters, { used, limit: config.maxTotalStorage }));
+  });
+
+  app.get('/admin/settings', async (c) => {
+    noStore(c);
+    if (!(await isAdminAuthed(c, c.env))) return c.html(adminLoginPage());
+    const config = await getConfig(c.env);
+    const used = await getStorageUsed(c.env.DB).catch(() => 0);
+    const saved = c.req.query('saved') === '1';
+    return c.html(
+      adminSettingsPage(
+        { config, used, turnstileReady: turnstileConfigured(c.env), varsMaxSize: toInt(c.env.MAX_FILE_SIZE, config.maxSize) },
+        saved,
+      ),
+    );
+  });
+
+  app.post('/admin/settings', async (c) => {
+    if (!(await isAdminAuthed(c, c.env))) return c.redirect('/admin');
+    const body = await c.req.parseBody();
+    const mb = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? Math.round(Number(v) * 1024 * 1024) : undefined);
+    const patch: Record<string, unknown> = {
+      openUpload: body['openUpload'] === '1',
+      turnstileEnabled: body['turnstileEnabled'] === '1',
+    };
+    const maxSize = mb(body['maxFileSizeMb']);
+    const maxTotal = mb(body['maxTotalStorageMb']);
+    const days = toInt(body['defaultExpireDays'], 0);
+    if (maxSize !== undefined && Number.isFinite(maxSize)) patch.maxFileSize = maxSize;
+    if (maxTotal !== undefined && Number.isFinite(maxTotal)) patch.maxTotalStorage = maxTotal;
+    if (days > 0) patch.defaultExpireDays = days;
+    await updateConfig(c.env, patch);
+    return c.redirect('/admin/settings?saved=1');
   });
 
   app.post('/admin/login', async (c) => {
@@ -256,6 +328,9 @@ export function registerWebRoutes(app: Hono<{ Bindings: Env }>): void {
         maxFileSize: config.maxSize,
         defaultExpireDays: config.defaultExpireDays,
         openUpload: config.openUpload,
+        maxTotalStorage: config.maxTotalStorage,
+        turnstileEnabled: config.turnstileEnabled,
+        turnstileConfigured: turnstileConfigured(c.env),
         chunkSize: CHUNK_SIZE,
       });
     }),

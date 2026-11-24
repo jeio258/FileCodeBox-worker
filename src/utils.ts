@@ -11,6 +11,8 @@ export const PLAIN_UPLOAD_LIMIT = 100 * 1024 * 1024;
 export const DEFAULT_MAX_SIZE = 300 * 1024 * 1024;
 export const DEFAULT_EXPIRE_DAYS = 7;
 export const MAX_TEXT_BYTES = 512 * 1024;
+/** 缩略图上限：浏览器端生成的 webp，不大于 128KB */
+export const MAX_THUMB_BYTES = 128 * 1024;
 /** 配置项硬上限，防误配 */
 export const MAX_CONFIG_SIZE = 1024 * 1024 * 1024;
 export const MAX_CONFIG_EXPIRE_DAYS = 3650;
@@ -35,6 +37,7 @@ export const fileKey = (code: string) => `${FILE_PREFIX}${code}`;
 export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
 export const chunkKey = (uploadId: string, index: number) => `chunk:${uploadId}:${index}`;
 export const chunkPrefix = (uploadId: string) => `chunk:${uploadId}:`;
+export const thumbKey = (code: string) => `thumb:${code}`;
 
 // ===================== 错误 =====================
 

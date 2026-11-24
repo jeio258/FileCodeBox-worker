@@ -4,9 +4,16 @@
  */
 
 import type { Env, FileRecord } from './types';
-import { HttpError, ORPHAN_GRACE_MS, RATE_WINDOW_MS, fileKey, stripFilePrefix } from './utils';
-import { checkRateLimit, deleteFileRecord, findExistingCodes, getFileByCode, incrementDownload } from './db';
-import { listFileObjects, removeObject, removeObjects } from './storage';
+import { HttpError, MAX_THUMB_BYTES, ORPHAN_GRACE_MS, RATE_WINDOW_MS, fileKey, stripFilePrefix, thumbKey } from './utils';
+import {
+  checkRateLimit,
+  deleteFileRecord,
+  findExistingCodes,
+  getFileByCode,
+  incrementDownload,
+  markFileThumb,
+} from './db';
+import { listFileObjects, putThumbObject, readThumbObject, removeObject, removeObjects } from './storage';
 
 export type ShareLookup =
   | { status: 'ok'; file: FileRecord; obj: R2ObjectBody }
@@ -55,13 +62,45 @@ export function buildDownloadResponse(file: FileRecord, obj: R2ObjectBody, isHea
   });
 }
 
-/** 删除文件：先删 R2 再删 D1（finally 保证记录清理），避免产生孤儿对象 */
+/** 删除文件：先删 R2（主对象 + 缩略图）再删 D1，避免孤儿 */
 export async function deleteStoredFile(env: Env, file: FileRecord): Promise<void> {
   try {
-    await removeObject(env.FILE_STORE, fileKey(file.code));
+    await removeObjects(env.FILE_STORE, [fileKey(file.code), thumbKey(file.code)]);
   } finally {
     await deleteFileRecord(env.DB, file.id);
   }
+}
+
+/** 保存浏览器端生成的缩略图（每文件仅一次，不可覆盖） */
+export async function saveThumb(env: Env, code: string, data: ArrayBuffer): Promise<void> {
+  if (!code) throw new HttpError(422, '缺少取件码');
+  if (data.byteLength === 0) throw new HttpError(422, '缩略图为空');
+  if (data.byteLength > MAX_THUMB_BYTES) throw new HttpError(413, '缩略图过大');
+
+  // 只接受真实 WEBP（浏览器端 canvas 输出）：避免任意字节被当作图片长期托管
+  const head = new Uint8Array(data.slice(0, 12));
+  const isWebp =
+    head.length === 12 &&
+    String.fromCharCode(head[0], head[1], head[2], head[3]) === 'RIFF' &&
+    String.fromCharCode(head[8], head[9], head[10], head[11]) === 'WEBP';
+  if (!isWebp) throw new HttpError(415, '缩略图必须是 WEBP');
+
+  const file = await getFileByCode(env.DB, code);
+  if (!file) throw new HttpError(404, '文件不存在或已过期');
+  if (file.hasThumb) throw new HttpError(409, '缩略图已存在');
+
+  await putThumbObject(env.FILE_STORE, code, data);
+  const ok = await markFileThumb(env.DB, code);
+  if (!ok) {
+    await removeObject(env.FILE_STORE, thumbKey(code));
+    throw new HttpError(409, '缩略图已存在');
+  }
+}
+
+/** 读取缩略图对象（不存在返回 null） */
+export async function readThumb(env: Env, code: string): Promise<R2ObjectBody | null> {
+  if (!code) return null;
+  return readThumbObject(env.FILE_STORE, code);
 }
 
 /**
