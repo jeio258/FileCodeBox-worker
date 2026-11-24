@@ -286,28 +286,39 @@ D1 fc_settings（管理端可改，部署不丢）  >  env / wrangler.jsonc（�
 ```
 FileCodeBox-worker/
 ├── src/
-│   ├── index.ts               # Web 路由（页面/上传/下载/管理）+ Cron
-│   ├── api.ts                 # FileCodeBox v2.1.0 兼容 API（挂载 /api）
-│   ├── upload.ts              # 上传域：普通/文本/分片（init·put·status·complete·abort）
-│   ├── files.ts               # 读取域：取件解析/计数/下载响应/删除/孤儿清理
-│   ├── config.ts              # 运行配置（env + D1 覆盖）与过期策略
-│   ├── storage.ts             # R2 层：multipart 写入器、分片读写
-│   ├── db.ts                  # D1 层：表结构、文件/设置/限流/分片任务
-│   ├── auth.ts                # 认证：登录/登出/限流/上传门控
-│   ├── utils.ts               # 常量、HttpError、取件码、哈希、格式化
-│   ├── types.ts               # 领域类型
+│   ├── index.ts               # 入口：中间件、惰性建表、路由装配、Cron
+│   ├── types.ts               # 领域模型 / DB 行 / Env
+│   ├── utils.ts               # 常量、错误类型、文本/哈希/IP/key 等纯函数
+│   ├── db.ts                  # D1 数据层（行 ↔ 领域模型映射唯一处）
+│   ├── storage.ts             # R2 存储层（multipart 写入器、分片对象）
+│   ├── config.ts              # 运行配置（D1 设置 > env > 默认）
+│   ├── expire.ts              # 过期策略（字段别名与换算唯一处）
+│   ├── auth.ts                # 认证：密码来源、会话、上传门控
+│   ├── files.ts               # 读取域：取件解析/下载响应/删除/孤儿清理
+│   ├── upload.ts              # 写入域：普通/文本/分片上传与超时回收
+│   ├── maintenance.ts         # Cron 编排（唯一维护入口）
+│   ├── respond.ts             # 响应层：json/html/compat 三种出口 + 参数提取
+│   ├── qr.ts                  # 二维码
+│   ├── routes/
+│   │   ├── web.ts             # Web 路由（页面/上传/下载/管理/自检）
+│   │   └── compat.ts          # FileCodeBox v2.1.0 兼容 API（挂载 /api）
 │   └── templates/
 │       ├── layout.ts          # HTML 布局
 │       ├── style.ts           # 暖纸墨色设计系统 CSS
 │       └── pages.ts           # 页面模板
-├── wrangler.jsonc             # Cloudflare 配置
+├── scripts/
+│   ├── preflight.mjs          # 部署前检查（Secret 是否仍在）
+│   ├── smoke.mjs              # 部署后冒烟（打真实域名，7 项）
+│   └── browser-test.mjs       # 无头浏览器端到端测试
+├── wrangler.jsonc
 ├── tsconfig.json
 └── package.json
 ```
 
 ## 🏗️ 架构设计
 
-- **分层单向依赖**：`utils` → `db`/`storage` → `config` → `files`/`upload` → `auth` → 路由（`index`/`api`）。路由只做参数与响应转换，业务逻辑单一实现
+- **分层单向依赖**：`utils` → `db`/`storage` → `config`/`expire` → `files`/`upload` → `auth` → `respond` → `routes/*` → `index`。路由只做参数与响应转换，业务逻辑单一实现
+- **命名边界**：数据库行为 snake_case（仅 `db.ts` 内），对外一律 camelCase 领域模型；线缆字段维持既有契约
 - **配置单一来源**：`MAX_FILE_SIZE`/`DEFAULT_EXPIRE_DAYS` 以 env 为默认，管理面板设置可覆盖（`config.getConfig`）
 - **上传实现**：R2 multipart 流式写入（30MB/块，内存与文件大小无关）；>100MB 走分片上传（30MB/片，断点续传、并发、失败重试）
 - **取件码复用机制**：原子抢占（`claimCode`）+ 删除/过期/取消后 `releaseCode` 释放，可循环使用

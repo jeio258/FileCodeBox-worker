@@ -1,79 +1,133 @@
-/** 数据层：仅 D1 读写，不涉及 R2 与 HTTP。 */
+/**
+ * 数据层：全部 D1 读写。对外只暴露领域模型（camelCase），
+ * 数据库行的 snake_case 形状仅在本文件内出现，避免命名在两套体系间泄漏。
+ */
 
-import type { ChunkUploadTask, FileRecord } from './types';
+import type {
+  ChunkTask,
+  ChunkTaskRow,
+  DashboardStats,
+  FileFilters,
+  FileRecord,
+  FileRow,
+  NewFile,
+} from './types';
 
 /** 表结构版本：增删表/列时必须 +1；ensureSchema 据此决定是否补建 */
 export const SCHEMA_VERSION = 3;
 const SCHEMA_KEY = 'schema_version';
 
+// ===================== 行 → 领域模型 =====================
+
+const toFile = (row: FileRow): FileRecord => ({
+  id: row.id,
+  code: row.code,
+  filename: row.filename,
+  size: row.size,
+  mimeType: row.mime_type,
+  expireAt: row.expire_at,
+  downloadCount: row.download_count,
+  maxDownloads: row.max_downloads,
+  createdAt: row.created_at,
+  clientIp: row.ip,
+  isText: row.is_text === 1,
+});
+
+const toChunkTask = (row: ChunkTaskRow): ChunkTask => ({
+  uploadId: row.upload_id,
+  code: row.code,
+  filename: row.filename,
+  size: row.size,
+  totalChunks: row.total_chunks,
+  mimeType: row.mime_type,
+  expireAt: row.expire_at,
+  maxDownloads: row.max_downloads,
+  clientIp: row.client_ip,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
 // ===================== 建表 =====================
 
-/** 初始化数据库表（幂等：scheduled 每次调用都执行，首次部署自动就绪） */
+const SCHEMA_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS fc_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    filename TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    mime_type TEXT DEFAULT 'application/octet-stream',
+    expire_at TEXT NOT NULL,
+    download_count INTEGER DEFAULT 0,
+    max_downloads INTEGER DEFAULT -1,
+    created_at TEXT NOT NULL,
+    ip TEXT DEFAULT '',
+    is_text INTEGER DEFAULT 0
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_fc_code ON fc_files(code)',
+  'CREATE INDEX IF NOT EXISTS idx_fc_expire ON fc_files(expire_at)',
+  'CREATE TABLE IF NOT EXISTS fc_used_codes (code TEXT PRIMARY KEY)',
+  `CREATE TABLE IF NOT EXISTS fc_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS fc_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS fc_rate_limits (
+    key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    window_start INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS fc_chunk_uploads (
+    upload_id TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    total_chunks INTEGER NOT NULL,
+    mime_type TEXT DEFAULT 'application/octet-stream',
+    expire_at TEXT NOT NULL,
+    max_downloads INTEGER DEFAULT -1,
+    client_ip TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+];
+
+/**
+ * 初始化/升级表结构（幂等）。由 ensureSchema 与 Cron 调用。
+ * 新表通过 CREATE IF NOT EXISTS 建立；老库缺列通过 ALTER 补齐；
+ * 旧布局（token 存设置表、限流存设置表 JSON）在此一次性迁移。
+ */
 export async function initDB(db: D1Database): Promise<void> {
-  const stmts = [
-    `CREATE TABLE IF NOT EXISTS fc_files (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT UNIQUE NOT NULL,
-      filename TEXT NOT NULL,
-      size INTEGER NOT NULL DEFAULT 0,
-      mime_type TEXT DEFAULT 'application/octet-stream',
-      expire_at TEXT NOT NULL,
-      download_count INTEGER DEFAULT 0,
-      max_downloads INTEGER DEFAULT -1,
-      created_at TEXT NOT NULL,
-      ip TEXT DEFAULT '',
-      is_text INTEGER DEFAULT 0
-    )`,
-    'CREATE INDEX IF NOT EXISTS idx_fc_code ON fc_files(code)',
-    'CREATE INDEX IF NOT EXISTS idx_fc_expire ON fc_files(expire_at)',
-    'CREATE TABLE IF NOT EXISTS fc_used_codes (code TEXT PRIMARY KEY)',
-    `CREATE TABLE IF NOT EXISTS fc_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )`,
-    `CREATE TABLE IF NOT EXISTS fc_state (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )`,
-    `CREATE TABLE IF NOT EXISTS fc_rate_limits (
-      key TEXT PRIMARY KEY,
-      count INTEGER NOT NULL,
-      window_start INTEGER NOT NULL
-    )`,
-    `CREATE TABLE IF NOT EXISTS fc_chunk_uploads (
-      upload_id TEXT PRIMARY KEY,
-      code TEXT NOT NULL,
-      filename TEXT NOT NULL,
-      size INTEGER NOT NULL,
-      total_chunks INTEGER NOT NULL,
-      mime_type TEXT DEFAULT 'application/octet-stream',
-      expire_at TEXT NOT NULL,
-      max_downloads INTEGER DEFAULT -1,
-      client_ip TEXT DEFAULT '',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )`,
-  ];
-  for (const stmt of stmts) {
-    await db.prepare(stmt).run();
-  }
-  // 旧库补列（列已存在时 sqlite 报 duplicate，忽略即可）
+  for (const sql of SCHEMA_STATEMENTS) await db.prepare(sql).run();
+
+  // 列已存在时 SQLite 报 duplicate column，忽略即可
   const migrate = (sql: string) => db.prepare(sql).run().catch(() => {});
   await migrate('ALTER TABLE fc_files ADD COLUMN is_text INTEGER DEFAULT 0');
   await migrate("ALTER TABLE fc_chunk_uploads ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
-  // 旧布局迁移：会话 token 移出配置表；旧格式限流键迁入 fc_rate_limits 后删除
-  await migrate("INSERT OR IGNORE INTO fc_state(key, value) SELECT 'admin_token', value FROM fc_settings WHERE key = 'admin_token'");
+  await migrate(
+    "INSERT OR IGNORE INTO fc_state(key, value) SELECT 'admin_token', value FROM fc_settings WHERE key = 'admin_token'",
+  );
   await migrate("DELETE FROM fc_settings WHERE key = 'admin_token'");
-  await migrate("INSERT OR IGNORE INTO fc_rate_limits(key, count, window_start) SELECT key, 1, CAST(json_extract(value, '$.windowStart') AS INTEGER) FROM fc_settings WHERE key LIKE '%ratelimit:%'");
+  await migrate(
+    "INSERT OR IGNORE INTO fc_rate_limits(key, count, window_start) SELECT key, 1, CAST(json_extract(value, '$.windowStart') AS INTEGER) FROM fc_settings WHERE key LIKE '%ratelimit:%'",
+  );
   await migrate("DELETE FROM fc_settings WHERE key LIKE 'login_ratelimit:%' OR key LIKE 'upload_ratelimit:%'");
-  // 记录版本，供 ensureSchema 判断是否需要补建
-  await db.prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)').bind(SCHEMA_KEY, String(SCHEMA_VERSION)).run();
+
+  await db
+    .prepare('INSERT OR REPLACE INTO fc_settings(key, value) VALUES(?, ?)')
+    .bind(SCHEMA_KEY, String(SCHEMA_VERSION))
+    .run();
 }
 
-/** 读取库内 schema 版本（表不存在或损坏视为 0） */
+/** 读取库内 schema 版本（表缺失或损坏视为 0，触发重建） */
 export async function getSchemaVersion(db: D1Database): Promise<number> {
   try {
-    const row = await db.prepare('SELECT value FROM fc_settings WHERE key = ?').bind(SCHEMA_KEY).first<{ value: string }>();
+    const row = await db
+      .prepare('SELECT value FROM fc_settings WHERE key = ?')
+      .bind(SCHEMA_KEY)
+      .first<{ value: string }>();
     return row ? Number(row.value) || 0 : 0;
   } catch {
     return 0;
@@ -82,31 +136,20 @@ export async function getSchemaVersion(db: D1Database): Promise<number> {
 
 // ===================== 文件 =====================
 
-/** 取件码查询（仅未过期文件） */
 export async function getFileByCode(db: D1Database, code: string): Promise<FileRecord | null> {
-  return db
+  const row = await db
     .prepare("SELECT * FROM fc_files WHERE code = ? AND datetime(expire_at) > datetime('now')")
     .bind(code)
-    .first<FileRecord>();
+    .first<FileRow>();
+  return row ? toFile(row) : null;
 }
 
 export async function getFileById(db: D1Database, id: number): Promise<FileRecord | null> {
-  return db.prepare('SELECT * FROM fc_files WHERE id = ?').bind(id).first<FileRecord>();
+  const row = await db.prepare('SELECT * FROM fc_files WHERE id = ?').bind(id).first<FileRow>();
+  return row ? toFile(row) : null;
 }
 
-export async function insertFile(
-  db: D1Database,
-  file: {
-    code: string;
-    filename: string;
-    size: number;
-    mimeType: string;
-    expireAt: string;
-    maxDownloads: number;
-    isText?: number;
-    clientIp?: string;
-  },
-): Promise<void> {
+export async function insertFile(db: D1Database, file: NewFile): Promise<void> {
   await db
     .prepare(
       'INSERT INTO fc_files(code, filename, size, mime_type, expire_at, max_downloads, created_at, ip, is_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -120,12 +163,12 @@ export async function insertFile(
       file.maxDownloads,
       new Date().toISOString(),
       file.clientIp ?? '',
-      file.isText ?? 0,
+      file.isText ? 1 : 0,
     )
     .run();
 }
 
-/** 下载计数：已达上限时不递增，返回 false */
+/** 下载计数：已达上限时不递增并返回 false */
 export async function incrementDownload(db: D1Database, code: string): Promise<boolean> {
   const result = await db
     .prepare(
@@ -139,10 +182,40 @@ export async function incrementDownload(db: D1Database, code: string): Promise<b
 
 /** 删除记录并释放取件码 */
 export async function deleteFileRecord(db: D1Database, id: number): Promise<void> {
-  const file = await getFileById(db, id);
-  if (!file) return;
+  const row = await db.prepare('SELECT code FROM fc_files WHERE id = ?').bind(id).first<{ code: string }>();
+  if (!row) return;
   await db.prepare('DELETE FROM fc_files WHERE id = ?').bind(id).run();
-  await releaseCode(db, file.code);
+  await releaseCode(db, row.code);
+}
+
+/** 取走已过期文件记录（删除记录 + 释放码），返回用于清理 R2 的对象列表 */
+export async function takeExpiredFiles(db: D1Database): Promise<FileRecord[]> {
+  const rows = await db
+    .prepare("SELECT * FROM fc_files WHERE datetime(expire_at) <= datetime('now')")
+    .all<FileRow>();
+  const files = (rows.results ?? []).map(toFile);
+  if (!files.length) return files;
+
+  await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
+  await Promise.all(files.map((f) => releaseCode(db, f.code)));
+  await cleanupUsedCodes(db);
+  return files;
+}
+
+/** 给定取件码，返回其中仍存在于 D1 的子集（孤儿对象比对用） */
+export async function findExistingCodes(db: D1Database, codes: string[]): Promise<Set<string>> {
+  const BATCH = 100; // D1 单语句绑定变量上限
+  const found = new Set<string>();
+  for (let i = 0; i < codes.length; i += BATCH) {
+    const batch = codes.slice(i, i + BATCH);
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = await db
+      .prepare(`SELECT code FROM fc_files WHERE code IN (${placeholders})`)
+      .bind(...batch)
+      .all<{ code: string }>();
+    for (const row of rows.results ?? []) found.add(row.code);
+  }
+  return found;
 }
 
 // ===================== 取件码占用 =====================
@@ -170,7 +243,7 @@ export async function releaseCode(db: D1Database, code: string): Promise<void> {
   await db.prepare('DELETE FROM fc_used_codes WHERE code = ?').bind(code).run();
 }
 
-/** 清理已无对应文件的占用码（删除中途失败的兜底） */
+/** 清理无主占用码（删除中途失败的兜底） */
 export async function cleanupUsedCodes(db: D1Database): Promise<number> {
   const result = await db
     .prepare('DELETE FROM fc_used_codes WHERE code NOT IN (SELECT code FROM fc_files)')
@@ -178,7 +251,7 @@ export async function cleanupUsedCodes(db: D1Database): Promise<number> {
   return result.meta?.changes ?? 0;
 }
 
-// ===================== 分页与统计 =====================
+// ===================== 列表与统计 =====================
 
 const SORT_SQL: Record<string, string> = {
   newest: 'id DESC',
@@ -188,13 +261,6 @@ const SORT_SQL: Record<string, string> = {
   mostDownloaded: 'download_count DESC',
   leastDownloaded: 'download_count ASC',
 };
-
-export interface FileFilters {
-  keyword: string;
-  dateFrom: string;
-  dateTo: string;
-  sort: string;
-}
 
 export async function listFiles(
   db: D1Database,
@@ -224,19 +290,10 @@ export async function listFiles(
     db
       .prepare(`SELECT * FROM fc_files ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
       .bind(...args, size, (page - 1) * size)
-      .all<FileRecord>(),
+      .all<FileRow>(),
     db.prepare(`SELECT COUNT(*) as count FROM fc_files ${where}`).bind(...args).first<{ count: number }>(),
   ]);
-  return { files: rows.results ?? [], total: countRow?.count ?? 0 };
-}
-
-export interface DashboardStats {
-  totalFiles: number;
-  totalSize: number;
-  todayCount: number;
-  todaySize: number;
-  yesterdayCount: number;
-  yesterdaySize: number;
+  return { files: (rows.results ?? []).map(toFile), total: countRow?.count ?? 0 };
 }
 
 export async function getDashboardStats(db: D1Database): Promise<DashboardStats> {
@@ -260,25 +317,10 @@ export async function getDashboardStats(db: D1Database): Promise<DashboardStats>
   };
 }
 
-// ===================== 过期清理 =====================
-
-/** 删除过期记录并释放取件码，返回待删除的 R2 key（由调用方批量删对象） */
-export async function takeExpiredFiles(db: D1Database): Promise<FileRecord[]> {
-  const rows = await db
-    .prepare("SELECT * FROM fc_files WHERE datetime(expire_at) <= datetime('now')")
-    .all<FileRecord>();
-  const files = rows.results ?? [];
-  if (!files.length) return files;
-
-  await db.prepare("DELETE FROM fc_files WHERE datetime(expire_at) <= datetime('now')").run();
-  await Promise.all(files.map((f) => releaseCode(db, f.code)));
-  await cleanupUsedCodes(db);
-  return files;
-}
-
-// ===================== 设置（管理员可编辑配置） =====================
+// ===================== 设置（管理员可编辑） =====================
 
 export async function getSettings(db: D1Database, keys: string[]): Promise<Record<string, string>> {
+  if (!keys.length) return {};
   const placeholders = keys.map(() => '?').join(',');
   const rows = await db
     .prepare(`SELECT key, value FROM fc_settings WHERE key IN (${placeholders})`)
@@ -309,31 +351,35 @@ export async function setState(db: D1Database, key: string, value: string): Prom
   await db.prepare('INSERT OR REPLACE INTO fc_state(key, value) VALUES(?, ?)').bind(key, value).run();
 }
 
-// ===================== 分片上传任务 =====================
+// ===================== 分片任务 =====================
 
-export async function insertChunkTask(db: D1Database, t: ChunkUploadTask): Promise<void> {
+export async function insertChunkTask(db: D1Database, t: ChunkTask): Promise<void> {
   await db
     .prepare(
       'INSERT INTO fc_chunk_uploads(upload_id, code, filename, size, total_chunks, mime_type, expire_at, max_downloads, client_ip, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     )
     .bind(
-      t.upload_id,
+      t.uploadId,
       t.code,
       t.filename,
       t.size,
-      t.total_chunks,
-      t.mime_type,
-      t.expire_at,
-      t.max_downloads,
-      t.client_ip,
-      t.created_at,
-      t.updated_at,
+      t.totalChunks,
+      t.mimeType,
+      t.expireAt,
+      t.maxDownloads,
+      t.clientIp,
+      t.createdAt,
+      t.updatedAt,
     )
     .run();
 }
 
-export async function getChunkTask(db: D1Database, uploadId: string): Promise<ChunkUploadTask | null> {
-  return db.prepare('SELECT * FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).first<ChunkUploadTask>();
+export async function getChunkTask(db: D1Database, uploadId: string): Promise<ChunkTask | null> {
+  const row = await db
+    .prepare('SELECT * FROM fc_chunk_uploads WHERE upload_id = ?')
+    .bind(uploadId)
+    .first<ChunkTaskRow>();
+  return row ? toChunkTask(row) : null;
 }
 
 /** 刷活：断点续传中的任务不会被超时回收 */
@@ -348,14 +394,14 @@ export async function deleteChunkTask(db: D1Database, uploadId: string): Promise
   await db.prepare('DELETE FROM fc_chunk_uploads WHERE upload_id = ?').bind(uploadId).run();
 }
 
-/** 取出并删除超过宽限期未活跃的任务（调用方负责清理 R2 分片与释放码） */
-export async function takeStaleChunkTasks(db: D1Database, olderThanMs: number): Promise<ChunkUploadTask[]> {
+/** 取走并删除超过宽限期未活跃的任务（调用方负责清理 R2 分片与释放码） */
+export async function takeStaleChunkTasks(db: D1Database, olderThanMs: number): Promise<ChunkTask[]> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
   const rows = await db
     .prepare('SELECT * FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)')
     .bind(cutoff)
-    .all<ChunkUploadTask>();
-  const tasks = rows.results ?? [];
+    .all<ChunkTaskRow>();
+  const tasks = (rows.results ?? []).map(toChunkTask);
   if (!tasks.length) return tasks;
 
   await db.prepare('DELETE FROM fc_chunk_uploads WHERE datetime(updated_at) <= datetime(?)').bind(cutoff).run();
@@ -365,70 +411,40 @@ export async function takeStaleChunkTasks(db: D1Database, olderThanMs: number): 
 // ===================== 限流 =====================
 
 /**
- * 固定窗口限流：单条 UPSERT 原子完成"窗口重置或计数+1"，避免 get-then-set 的
- * 两步竞态与两次往返；无论是否放行都计数，防止窗口重置后获得额外尝试。
+ * 固定窗口限流：单条 UPSERT 原子完成"窗口重置或计数 +1"，避免 get-then-set 竞态与两次往返。
+ * 限流表异常时降级放行（可用性优先），并记录事件。
  */
 export async function checkRateLimit(
   db: D1Database,
-  keyPrefix: string,
+  bucket: string,
   ip: string,
   max: number,
   windowMs: number,
 ): Promise<boolean> {
-  const now = Date.now();
   try {
-    return await bumpRateLimit(db, keyPrefix, ip, max, windowMs, now);
+    const now = Date.now();
+    const row = await db
+      .prepare(
+        `INSERT INTO fc_rate_limits(key, count, window_start) VALUES(?1, 1, ?2)
+         ON CONFLICT(key) DO UPDATE SET
+           count = CASE WHEN ?2 - window_start >= ?3 THEN 1 ELSE count + 1 END,
+           window_start = CASE WHEN ?2 - window_start >= ?3 THEN ?2 ELSE window_start END
+         RETURNING count`,
+      )
+      .bind(`${bucket}:${ip}`, now, windowMs)
+      .first<{ count: number }>();
+    return (row?.count ?? 1) <= max;
   } catch (e) {
-    // 限流表异常不应让整个上传不可用：降级放行并记录
     console.error(JSON.stringify({ event: 'ratelimit_unavailable', error: String(e) }));
     return true;
   }
 }
 
-async function bumpRateLimit(
-  db: D1Database,
-  keyPrefix: string,
-  ip: string,
-  max: number,
-  windowMs: number,
-  now: number,
-): Promise<boolean> {
-  const row = await db
-    .prepare(
-      `INSERT INTO fc_rate_limits(key, count, window_start) VALUES(?1, 1, ?2)
-       ON CONFLICT(key) DO UPDATE SET
-         count = CASE WHEN ?2 - window_start >= ?3 THEN 1 ELSE count + 1 END,
-         window_start = CASE WHEN ?2 - window_start >= ?3 THEN ?2 ELSE window_start END
-       RETURNING count`,
-    )
-    .bind(`${keyPrefix}:${ip}`, now, windowMs)
-    .first<{ count: number }>();
-  return (row?.count ?? 1) <= max;
-}
-
-/** 单条 SQL 回收过期窗口，无需逐行 JSON 解析 */
+/** 单条 SQL 回收过期窗口 */
 export async function cleanupRateLimits(db: D1Database, windowMs: number): Promise<number> {
   const result = await db
     .prepare('DELETE FROM fc_rate_limits WHERE window_start < ?')
     .bind(Date.now() - windowMs)
     .run();
   return result.meta?.changes ?? 0;
-}
-
-// ===================== 孤儿对象比对 =====================
-
-/** 给定 R2 现存 key，返回其中在 D1 里不存在的取件码集合 */
-export async function findActiveCodes(db: D1Database, codes: string[]): Promise<Set<string>> {
-  const BATCH = 100; // D1 单语句绑定变量上限
-  const active = new Set<string>();
-  for (let i = 0; i < codes.length; i += BATCH) {
-    const batch = codes.slice(i, i + BATCH);
-    const placeholders = batch.map(() => '?').join(',');
-    const rows = await db
-      .prepare(`SELECT code FROM fc_files WHERE code IN (${placeholders})`)
-      .bind(...batch)
-      .all<{ code: string }>();
-    for (const row of rows.results ?? []) active.add(row.code);
-  }
-  return active;
 }

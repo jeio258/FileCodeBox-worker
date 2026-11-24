@@ -1,4 +1,6 @@
-/** 纯工具函数、共享常量与 HTTP 错误类型。不依赖 D1/R2。 */
+/**
+ * 基础设施层：常量、错误类型、纯函数工具。不依赖 D1/R2/Hono。
+ */
 
 // ===================== 常量 =====================
 
@@ -9,6 +11,9 @@ export const PLAIN_UPLOAD_LIMIT = 100 * 1024 * 1024;
 export const DEFAULT_MAX_SIZE = 300 * 1024 * 1024;
 export const DEFAULT_EXPIRE_DAYS = 7;
 export const MAX_TEXT_BYTES = 512 * 1024;
+/** 配置项硬上限，防误配 */
+export const MAX_CONFIG_SIZE = 1024 * 1024 * 1024;
+export const MAX_CONFIG_EXPIRE_DAYS = 3650;
 
 export const RATE_WINDOW_MS = 60_000;
 export const UPLOAD_RATE_MAX = 10;
@@ -19,33 +24,44 @@ export const CHUNK_STALE_MS = 6 * 3_600_000;
 /** 孤儿 R2 对象宽限期：上传先写 R2 后写 D1，过早清理会丢数据 */
 export const ORPHAN_GRACE_MS = 3_600_000;
 
+export const ADMIN_TOKEN_KEY = 'admin_token';
+export const ADMIN_TOKEN_MAX_AGE = 86_400;
+export const ADMIN_MIN_PASSWORD_LEN = 6;
+
+// ===================== R2 key =====================
+
 export const FILE_PREFIX = 'file:';
 export const fileKey = (code: string) => `${FILE_PREFIX}${code}`;
+export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
 export const chunkKey = (uploadId: string, index: number) => `chunk:${uploadId}:${index}`;
 export const chunkPrefix = (uploadId: string) => `chunk:${uploadId}:`;
-export const stripFilePrefix = (key: string) => key.slice(FILE_PREFIX.length);
 
-// ===================== HTTP 错误 =====================
+// ===================== 错误 =====================
 
-/** 业务错误：路由层统一转为对应状态码 */
+/** 业务错误：路由层据此决定对外状态码与文案 */
 export class HttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
   }
 }
 
-export const statusOf = (e: unknown, fallback = 500): number =>
-  e instanceof HttpError ? e.status : fallback;
+/** 超出大小上限（写入器与上传入口共用，避免字符串协议） */
+export class PayloadTooLargeError extends HttpError {
+  constructor(maxSize: number) {
+    super(413, `文件过大，最大 ${Math.floor(maxSize / 1024 / 1024)}MB`);
+  }
+}
 
-export const messageOf = (e: unknown, fallback: string): string =>
-  e instanceof Error && e.message ? e.message : fallback;
+export const isHttpError = (e: unknown): e is HttpError => e instanceof HttpError;
 
-/** 超限错误统一文案（各处上限不同，避免重复拼接） */
-export const tooLarge = (maxSize: number) =>
-  new HttpError(413, `文件过大，最大 ${Math.floor(maxSize / 1024 / 1024)}MB`);
+export const statusOf = (e: unknown, fallback = 500): number => (isHttpError(e) ? e.status : fallback);
 
-/** multipart 写入器超限信号，由调用方转成 tooLarge */
-export const SIZE_LIMIT_SIGNAL = 'SIZE_LIMIT_EXCEEDED';
+/** 仅业务错误可对外暴露文案；未知异常一律用兜底文案 */
+export const publicMessage = (e: unknown, fallback: string): string => {
+  if (isHttpError(e)) return e.message;
+  console.error(JSON.stringify({ event: 'unexpected_error', error: String(e) }));
+  return fallback;
+};
 
 // ===================== 取件码 =====================
 
@@ -75,7 +91,7 @@ export function escapeHtml(str: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/** 文件名规范化：解码（容忍非法 URI 编码）→ 去控制字符 → 截断 */
+/** 文件名规范化：解码（容忍非法编码）→ 去控制字符与路径分隔符 → 截断 */
 export function sanitizeFilename(raw: string | undefined, fallback = '未命名'): string {
   let name = raw ?? fallback;
   try {
@@ -83,9 +99,14 @@ export function sanitizeFilename(raw: string | undefined, fallback = '未命名'
   } catch {
     /* 保留原始值 */
   }
-  // 去控制字符与路径分隔符，避免响应头/展示异常
   name = name.replace(/[\u0000-\u001f\u007f/\\]/g, '').trim().slice(0, 200);
   return name || fallback;
+}
+
+/** 文本摘要：折叠空白后截断，用作文本分享的展示标题 */
+export function summarize(text: string, limit = 50): string {
+  const flat = text.replace(/\s+/g, ' ');
+  return flat.slice(0, limit) + (flat.length > limit ? '…' : '');
 }
 
 /** 格式化文件大小 */
@@ -95,6 +116,9 @@ export function formatFileSize(bytes: number): string {
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
 }
+
+/** 字节数 → MB 整数（错误文案用） */
+export const mbOf = (bytes: number) => Math.floor(bytes / 1024 / 1024);
 
 // ===================== 请求信息 =====================
 
@@ -108,13 +132,14 @@ export function getClientIp(headers: Headers): string {
   );
 }
 
+const HOSTNAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9](\.[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9])*$/;
+
 /**
  * 站点根 URL。仅接受合法主机名（拒绝 IP 与异常值），防止 Host 头注入造成开放重定向；
- * 不合法时回退到请求 URL 的 origin。
+ * 不合法时回退到请求 origin。
  */
 export function getBaseUrl(origin: string, host: string | undefined): string {
-  const valid = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9](\.[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9])*$/;
-  if (!host || !valid.test(host)) return origin;
+  if (!host || !HOSTNAME_RE.test(host)) return origin;
   return `${host.startsWith('localhost') ? 'http' : 'https'}://${host}`;
 }
 
@@ -125,13 +150,9 @@ const PBKDF2_SALT = new TextEncoder().encode('filecodebox-admin-v1');
 
 /** PBKDF2-SHA256 哈希（固定盐 + 10 万次迭代，抗暴力破解） */
 export async function hashPassword(pwd: string): Promise<string> {
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(pwd),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  );
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(pwd), 'PBKDF2', false, [
+    'deriveBits',
+  ]);
   const bits = await crypto.subtle.deriveBits(
     { name: 'PBKDF2', salt: PBKDF2_SALT, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
     keyMaterial,
@@ -152,3 +173,17 @@ export function timingSafeCompare(a: string, b: string): boolean {
   for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
   return diff === 0;
 }
+
+// ===================== 数值解析 =====================
+
+export const toInt = (v: unknown, fallback: number): number => {
+  const n = typeof v === 'number' ? v : parseInt(String(v ?? ''), 10);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+/** 正整数并夹取上限，非法值回落默认 */
+export const toBoundedInt = (v: unknown, fallback: number, max: number): number => {
+  const n = toInt(v, fallback);
+  if (n < 1) return fallback;
+  return Math.min(n, max);
+};

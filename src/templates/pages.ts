@@ -263,19 +263,19 @@ export function retrievePage(code?: string): string {
 
 export function filePage(file: FileRecord, baseUrl: string): string {
   const shareUrl = `${baseUrl}/r/${file.code}`;
-  const expireDate = new Date(file.expire_at);
+  const expireDate = new Date(file.expireAt);
   const expireStr =
     expireDate.getTime() - Date.now() > 365 * 86400000
       ? '永久有效'
       : `过期: ${expireDate.toLocaleDateString('zh-CN')}`;
   const dlInfo =
-    file.max_downloads < 0
-      ? `已下载 ${file.download_count} 次`
-      : `已下载 ${file.download_count}/${file.max_downloads} 次`;
+    file.maxDownloads < 0
+      ? `已下载 ${file.downloadCount} 次`
+      : `已下载 ${file.downloadCount}/${file.maxDownloads} 次`;
   const meta = metaRow(formatFileSize(file.size), dlInfo, expireStr);
 
   // 文本分享：内容由客户端拉取（含查看计数与超时处理）
-  if (file.is_text === 1) {
+  if (file.isText) {
     const left = `
         ${pageHeader('取件')}
         <div class="share-title">文本</div>
@@ -385,13 +385,13 @@ export function adminPanel(files: FileRecord[], total: number, page: number, fil
 
   const rows = files
     .map((f) => {
-      const expired = new Date(f.expire_at).getTime() < Date.now();
+      const expired = new Date(f.expireAt).getTime() < Date.now();
       return `<div class="file-list-item ${expired ? 'expired' : ''}">
         <span class="fname">${escapeHtml(f.filename)}</span>
         <span class="fmeta">${escapeHtml(f.code)}</span>
         <span class="fmeta">${formatFileSize(f.size)}</span>
-        <span class="fmeta">${f.download_count}次</span>
-        <span class="fmeta">${f.expire_at.slice(0, 10)}</span>
+        <span class="fmeta">${f.downloadCount}次</span>
+        <span class="fmeta">${f.expireAt.slice(0, 10)}</span>
         <form method="post" action="/admin/delete/${f.id}" class="inline-form" onsubmit="return confirm('确认删除？')">
           <button type="submit" class="btn-danger">删除</button>
         </form>

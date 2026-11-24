@@ -1,12 +1,24 @@
-/** 存储层：仅 R2 操作。 */
+/** 存储层：全部 R2 读写。不涉及 D1 与 HTTP。 */
 
-import { CHUNK_SIZE, FILE_PREFIX, SIZE_LIMIT_SIGNAL, chunkKey, chunkPrefix } from './utils';
+import {
+  CHUNK_SIZE,
+  FILE_PREFIX,
+  PayloadTooLargeError,
+  chunkKey,
+  chunkPrefix,
+} from './utils';
 
 export interface MultipartWriter {
   push(chunk: Uint8Array): Promise<void>;
   /** 收尾并返回实际字节数（0 字节走普通 put） */
   finish(): Promise<number>;
   abort(): Promise<void>;
+}
+
+interface ObjectMeta {
+  contentType: string;
+  filename: string;
+  maxSize: number;
 }
 
 /**
@@ -17,10 +29,10 @@ export interface MultipartWriter {
 export async function createMultipartWriter(
   bucket: R2Bucket,
   key: string,
-  opts: { contentType: string; filename: string; maxSize: number },
+  meta: ObjectMeta,
 ): Promise<MultipartWriter> {
-  const httpMetadata = { contentType: opts.contentType };
-  const customMetadata = { filename: opts.filename };
+  const httpMetadata = { contentType: meta.contentType };
+  const customMetadata = { filename: meta.filename };
   const mp = await bucket.createMultipartUpload(key, { httpMetadata, customMetadata });
 
   let size = 0;
@@ -30,7 +42,7 @@ export async function createMultipartWriter(
   let closed = false;
   const parts: R2UploadedPart[] = [];
 
-  async function flush() {
+  async function flushFullPart() {
     parts.push(await mp.uploadPart(partNumber++, buf));
     buf = new Uint8Array(CHUNK_SIZE);
     bufLen = 0;
@@ -40,14 +52,14 @@ export async function createMultipartWriter(
     async push(chunk) {
       if (closed) throw new Error('writer closed');
       size += chunk.byteLength;
-      if (size > opts.maxSize) throw new Error(SIZE_LIMIT_SIGNAL);
+      if (size > meta.maxSize) throw new PayloadTooLargeError(meta.maxSize);
 
       let rest = chunk;
       while (rest.byteLength > 0) {
         const take = Math.min(CHUNK_SIZE - bufLen, rest.byteLength);
         buf.set(rest.subarray(0, take), bufLen);
         bufLen += take;
-        if (bufLen === CHUNK_SIZE) await flush();
+        if (bufLen === CHUNK_SIZE) await flushFullPart();
         rest = rest.subarray(take);
       }
     },
@@ -55,7 +67,7 @@ export async function createMultipartWriter(
     async finish() {
       closed = true;
       if (size === 0) {
-        // multipart 需至少一个 part，空文件直接 put（长度已知）
+        // multipart 至少需一个 part；空文件直接 put（长度已知）
         await mp.abort();
         await bucket.put(key, new Uint8Array(0), { httpMetadata, customMetadata });
         return 0;
@@ -72,6 +84,41 @@ export async function createMultipartWriter(
   };
 }
 
+/** 文本等小对象直接写入 */
+export async function putObject(
+  bucket: R2Bucket,
+  key: string,
+  body: string,
+  meta: { contentType: string; filename: string },
+): Promise<void> {
+  await bucket.put(key, body, {
+    httpMetadata: { contentType: meta.contentType },
+    customMetadata: { filename: meta.filename },
+  });
+}
+
+export async function getObject(bucket: R2Bucket, key: string): Promise<R2ObjectBody | null> {
+  return bucket.get(key);
+}
+
+export async function getObjectText(bucket: R2Bucket, key: string): Promise<string | null> {
+  const obj = await bucket.get(key);
+  return obj ? obj.text() : null;
+}
+
+export async function removeObject(bucket: R2Bucket, key: string): Promise<void> {
+  await bucket.delete(key).catch(() => {});
+}
+
+/** 批量删除（1000 键/批，R2 单次上限） */
+export async function removeObjects(bucket: R2Bucket, keys: string[]): Promise<void> {
+  for (let i = 0; i < keys.length; i += 1000) {
+    await bucket.delete(keys.slice(i, i + 1000));
+  }
+}
+
+// ===================== 分片对象 =====================
+
 /** 写入单个分片（同 index 覆盖，幂等） */
 export async function putChunkPart(
   bucket: R2Bucket,
@@ -84,38 +131,43 @@ export async function putChunkPart(
   });
 }
 
+export async function getChunkPart(
+  bucket: R2Bucket,
+  uploadId: string,
+  index: number,
+): Promise<R2ObjectBody | null> {
+  return bucket.get(chunkKey(uploadId, index));
+}
+
 /** 已上传的分片序号（升序） */
-export async function listChunkParts(bucket: R2Bucket, uploadId: string, totalChunks: number): Promise<number[]> {
-  const listed = await bucket.list({ prefix: chunkPrefix(uploadId) });
+export async function listChunkParts(
+  bucket: R2Bucket,
+  uploadId: string,
+  totalChunks: number,
+): Promise<number[]> {
+  const prefix = chunkPrefix(uploadId);
+  const listed = await bucket.list({ prefix });
   return listed.objects
-    .map((o) => Number(o.key.slice(chunkPrefix(uploadId).length)))
+    .map((o) => Number(o.key.slice(prefix.length)))
     .filter((n) => Number.isInteger(n) && n >= 0 && n < totalChunks)
     .sort((a, b) => a - b);
 }
 
-export async function deleteChunkParts(bucket: R2Bucket, uploadId: string, totalChunks: number): Promise<void> {
-  const keys = Array.from({ length: totalChunks }, (_, i) => chunkKey(uploadId, i));
-  await bucket.delete(keys);
+export async function deleteChunkParts(
+  bucket: R2Bucket,
+  uploadId: string,
+  totalChunks: number,
+): Promise<void> {
+  await removeObjects(
+    bucket,
+    Array.from({ length: totalChunks }, (_, i) => chunkKey(uploadId, i)),
+  );
 }
 
-export async function removeObject(bucket: R2Bucket, key: string): Promise<void> {
-  await bucket.delete(key).catch(() => {});
-}
-
-/** 读取某分片对象，缺失返回 null */
-export async function getChunkPart(bucket: R2Bucket, uploadId: string, index: number): Promise<R2ObjectBody | null> {
-  return bucket.get(chunkKey(uploadId, index));
-}
-
-/** 批量删除对象（1000 键/批，R2 单次上限） */
-export async function removeObjects(bucket: R2Bucket, keys: string[]): Promise<void> {
-  for (let i = 0; i < keys.length; i += 1000) {
-    await bucket.delete(keys.slice(i, i + 1000));
-  }
-}
+// ===================== 列举 =====================
 
 /** 列出全部 file:* 对象（cursor 翻页，避免只扫首页漏掉字典序靠后的 key） */
-export async function listStoredFiles(bucket: R2Bucket): Promise<R2Object[]> {
+export async function listFileObjects(bucket: R2Bucket): Promise<R2Object[]> {
   const objects: R2Object[] = [];
   let cursor: string | undefined;
   do {

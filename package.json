@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npm run preflight && wrangler deploy",
-    "test": "node test-headless.mjs",
+    "test": "node scripts/browser-test.mjs",
     "typecheck": "tsc --noEmit",
     "preflight": "node scripts/preflight.mjs",
     "smoke": "node scripts/smoke.mjs"
