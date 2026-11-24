@@ -399,7 +399,10 @@ a.fname:hover { text-decoration: underline; text-underline-offset: 2px; }
 .filter-bar .input-group { margin: 0; }
 .filter-bar .grow { flex: 1; min-width: 140px; }
 .filter-bar .btn { width: auto; padding: 9px 16px; margin-bottom: 1px; }
-.toolbar { margin-bottom: 14px; }
+.toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+/* 筛选占满左侧剩余宽度（内部字段自行换行），清理固定在右侧同一行 */
+.toolbar .filter-bar { flex: 1 1 0; min-width: 0; margin-bottom: 0; }
+.toolbar .cleanup-form { flex: 0 0 auto; align-self: flex-end; }
 .pagination { text-align: center; margin-top: 14px; font-size: 13px; color: var(--color-ink-2); }
 .pagination a { color: var(--color-ink); text-decoration: none; margin: 0 6px; }
 .pagination a:hover { text-decoration: underline; }

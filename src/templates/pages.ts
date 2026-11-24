@@ -999,7 +999,8 @@ export function adminPanel(
       '<a href="/">首页</a><a href="/admin/settings">设置</a><a href="/admin/logout">退出</a>',
     )}
 
-    <form method="get" action="/admin" class="filter-bar">
+    <div class="toolbar">
+      <form method="get" action="/admin" class="filter-bar">
       <div class="input-group grow">
         <label>关键词</label>
         <input type="text" name="keyword" class="input" value="${escapeHtml(filters.keyword)}" placeholder="文件名搜索">
@@ -1017,12 +1018,10 @@ export function adminPanel(
         <select name="sort" class="input">${sortOptions}</select>
       </div>
       <button type="submit" class="btn btn-primary">筛选</button>
-      ${filtered ? '<a href="/admin" class="btn btn-secondary">重置</a>' : ''}
-    </form>
-
-    <div class="toolbar">
-      <form method="post" action="/admin/cleanup" style="display:inline" onsubmit="return confirm('确认清理所有过期文件？')">
-        <button type="submit" class="btn btn-secondary btn-sm">清理过期文件</button>
+        ${filtered ? '<a href="/admin" class="btn btn-secondary">重置</a>' : ''}
+      </form>
+      <form method="post" action="/admin/cleanup" class="cleanup-form" onsubmit="return confirm('确认清理所有过期文件？')">
+        <button type="submit" class="btn btn-secondary">清理过期文件</button>
       </form>
     </div>
 
@@ -1090,5 +1089,5 @@ export function adminSettingsPage(o: SettingsInput, saved = false): string {
       </div>
       <button type="submit" class="btn btn-primary">保存设置</button>
     </form>`;
-  return layout('系统设置', content, true, true);
+  return layout('系统设置', card(content), true, true);
 }
